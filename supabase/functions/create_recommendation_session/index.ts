@@ -2,6 +2,11 @@
 import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import OpenAI from "npm:openai@4.20.1";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.0";
+import { z } from "https://deno.land/x/zod@v3.22.4/mod.ts";
+
+// ============================================================================
+// ENVIRONMENT & CONFIGURATION
+// ============================================================================
 
 const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY")!;
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -26,34 +31,180 @@ const FINAL_COUNT = 5;
 const TOPUP_MAX_ATTEMPTS = 1;
 const NOTES_MAX = 10;
 const GENRES_MAX = 10;
+const API_TIMEOUT_MS = 5000;
+
+// ============================================================================
+// TYPE DEFINITIONS
+// ============================================================================
 
 type SessionType = "onboarding" | "mood" | "quick_match";
 type TmdbType = "movie" | "tv";
-type InteractionAction = "impression" | "open" | "play" | "complete" | "like" | "dislike" | "skip" | "feedback";
+type InteractionAction =
+  | "impression"
+  | "open"
+  | "play"
+  | "complete"
+  | "like"
+  | "dislike"
+  | "skip"
+  | "feedback";
+
+type AvailabilityType = "flatrate" | "free" | "ads" | "rent" | "buy";
+
+interface LogContext {
+  reqId: string;
+  userId?: string | null;
+  profileId?: string;
+}
+
+interface TmdbSearchResult {
+  tmdb_id: number;
+  tmdb_type: TmdbType;
+  tmdb_title: string;
+}
+
+interface WatchProvider {
+  provider_id: number;
+  name: string;
+  logo_url: string | null;
+}
+
+interface WatchProviderWithAvailability extends WatchProvider {
+  availability_type: AvailabilityType;
+}
+
+interface WatchProvidersResult {
+  link: string | null;
+  providers: WatchProvider[];
+  providerAvailability: WatchProviderWithAvailability[];
+}
+
+interface MediaTitle {
+  id: string;
+  tmdb_id: number;
+  tmdb_type: TmdbType;
+  title: string;
+  overview: string | null;
+  genres: string[];
+  year: number | null;
+  runtime_minutes: number | null;
+  poster_url: string | null;
+  backdrop_url: string | null;
+  imdb_id: string | null;
+  imdb_rating: number | null;
+  age_rating: string | null;
+  director: string | null;
+  starring: string[] | null;
+  raw_tmdb: any;
+  raw_omdb: any;
+  created_at: string;
+  updated_at: string;
+}
+
+interface TmdbDetails {
+  id: number;
+  title?: string;
+  name?: string;
+  overview?: string;
+  genres?: Array<{ id: number; name: string }>;
+  release_date?: string;
+  first_air_date?: string;
+  runtime?: number;
+  episode_run_time?: number[];
+  poster_path?: string;
+  backdrop_path?: string;
+  imdb_id?: string;
+  external_ids?: { imdb_id?: string };
+  credits?: {
+    cast?: Array<{ name: string; order: number }>;
+    crew?: Array<{ name: string; job: string }>;
+  };
+  created_by?: Array<{ name: string }>;
+}
+
+interface OmdbResponse {
+  Response: string;
+  imdbRating?: string;
+  Rated?: string;
+  [key: string]: any;
+}
+
+interface OpenAIItem {
+  title: string;
+  tmdb_type: TmdbType;
+  tmdb_search_query: string;
+  primary_genres: string[];
+  tone_tags: string[];
+  reason: string;
+  match_score: number;
+}
+
+interface OpenAIResponse {
+  mood_label: string;
+  mood_tags: string[];
+  items: OpenAIItem[];
+}
+
+interface RecommendationCard {
+  title_id: string;
+  title: string;
+  year: string;
+  duration: string;
+  genres: string[];
+  rating: string;
+  age_rating: string;
+  quote: string;
+  description: string;
+  poster_url: string | null;
+  match_score: number | null;
+  tmdb_type: TmdbType;
+  director: string;
+  starring: string[];
+  watch_provider_link: string | null;
+  watch_providers: WatchProvider[];
+}
+
+// ============================================================================
+// ZOD VALIDATION SCHEMAS
+// ============================================================================
+
+const RequestBodySchema = z.object({
+  profile_id: z.string().uuid(),
+  session_type: z.enum(["onboarding", "mood", "quick_match"]),
+  mood_input: z.record(z.any()).optional().default({}),
+  content_types: z.array(z.enum(["movie", "tv"])).optional(),
+});
+
+type RequestBody = z.infer<typeof RequestBodySchema>;
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
 
 function normalizeTitle(s: string): string {
   return (s || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function nowIso() {
+function nowIso(): string {
   return new Date().toISOString();
 }
 
-function daysAgoIso(days: number) {
+function daysAgoIso(days: number): string {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 }
 
-function log(ctx: { reqId: string; userId?: string | null }, msg: string, extra?: unknown) {
+function log(ctx: LogContext, msg: string, extra?: unknown): void {
   const ts = new Date().toISOString();
   const base =
     `[create_recommendation_session][${ts}][req:${ctx.reqId}]` +
-    (ctx.userId ? `[user:${ctx.userId}]` : "[user:unknown]");
+    (ctx.userId ? `[user:${ctx.userId}]` : "[user:unknown]") +
+    (ctx.profileId ? `[profile:${ctx.profileId}]` : "");
   if (extra !== undefined) console.log(base + " " + msg, extra);
   else console.log(base + " " + msg);
 }
 
-function parseContentTypes(body: any): TmdbType[] {
-  const raw = body?.content_types ?? body?.mood_input?.content_types ?? [];
+function parseContentTypes(body: RequestBody): TmdbType[] {
+  const raw = body.content_types ?? (body.mood_input as any)?.content_types ?? [];
   const list = Array.isArray(raw) ? raw : [];
   const cleaned = list
     .map((x: any) => String(x).toLowerCase().trim())
@@ -117,17 +268,9 @@ function getFeedbackSentiment(
   extra: any,
 ): "positive" | "negative" | "neutral" {
   const wouldWatchAgain = extra?.would_watch_again === true;
-  const quickTags: string[] = Array.isArray(extra?.quick_tags)
-    ? extra.quick_tags.map((x: any) => String(x).toLowerCase())
-    : [];
-  const hasNegativeTag =
-    quickTags.some((t) => t.includes("too slow")) ||
-    quickTags.some((t) => t.includes("boring")) ||
-    quickTags.some((t) => t.includes("bad"));
-  const hasPositiveTag =
-    quickTags.some((t) => t.includes("great")) ||
-    quickTags.some((t) => t.includes("amazing")) ||
-    quickTags.some((t) => t.includes("excellent"));
+  const quickTags: string[] = Array.isArray(extra?.quick_tags) ? extra.quick_tags.map((x: any) => String(x).toLowerCase()) : [];
+  const hasNegativeTag = quickTags.some((t) => t.includes("too slow")) || quickTags.some((t) => t.includes("boring")) || quickTags.some((t) => t.includes("bad"));
+  const hasPositiveTag = quickTags.some((t) => t.includes("great")) || quickTags.some((t) => t.includes("amazing")) || quickTags.some((t) => t.includes("excellent"));
 
   if (rating !== null) {
     if (rating >= 4) return "positive";
@@ -143,6 +286,32 @@ function getFeedbackSentiment(
   return "neutral";
 }
 
+function topKeysByScore(m: Map<string, number>, max: number): string[] {
+  return Array.from(m.entries()).sort((a, b) => b[1] - a[1]).slice(0, max).map((x) => x[0]);
+}
+
+function topNotes(list: Array<{ text: string; w: number; at: string }>, max: number): string[] {
+  return list.sort((a, b) => b.w - a.w).slice(0, max).map((x) => x.text);
+}
+
+async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = API_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(timeoutId);
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error instanceof Error && error.name === "AbortError") throw new Error(`Request timeout after ${timeoutMs}ms: ${url}`);
+    throw error;
+  }
+}
+
+// ============================================================================
+// OPENAI INTERACTION
+// ============================================================================
+
 function buildSystemPrompt(
   itemsCount: number,
   allowedTypes: TmdbType[],
@@ -150,7 +319,7 @@ function buildSystemPrompt(
   softExcludedTitles: string[],
   positiveSignals: { genres: string[]; notes: string[]; tags: string[] },
   negativeSignals: { genres: string[]; notes: string[]; tags: string[]; titles: string[] },
-) {
+): string {
   const allowed = allowedTypes.join(", ");
   const hardEx = hardExcludedTitles.slice(0, 120).join(", ");
   const softEx = softExcludedTitles.slice(0, 120).join(", ");
@@ -209,7 +378,7 @@ Constraints:
 }
 
 async function callOpenAI(
-  ctx: { reqId: string; userId?: string | null },
+  ctx: LogContext,
   promptObj: unknown,
   itemsCount: number,
   allowedTypes: TmdbType[],
@@ -217,12 +386,12 @@ async function callOpenAI(
   softExcludedTitles: string[],
   positiveSignals: { genres: string[]; notes: string[]; tags: string[] },
   negativeSignals: { genres: string[]; notes: string[]; tags: string[]; titles: string[] },
-) {
+): Promise<OpenAIResponse> {
   const baseSystem = buildSystemPrompt(itemsCount, allowedTypes, hardExcludedTitles, softExcludedTitles, positiveSignals, negativeSignals);
   const system1 = baseSystem + `\n\nFINAL OUTPUT RULE: Return ONLY the JSON object.`;
   const system2 = baseSystem + `\n\nYOU MUST FIX OUTPUT: Return ONLY valid JSON object matching schema.`;
 
-  async function runOnce(system: string, temperature?: number) {
+  async function runOnce(system: string, temperature?: number): Promise<OpenAIResponse> {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o",
       ...(temperature !== undefined ? { temperature } : {}),
@@ -235,11 +404,11 @@ async function callOpenAI(
     log(ctx, "OpenAI raw response (first 500 chars)", raw.slice(0, 500));
     const cleaned = stripCodeFences(raw);
     try {
-      return JSON.parse(cleaned);
+      return JSON.parse(cleaned) as OpenAIResponse;
     } catch {
       const maybe = extractFirstJsonObject(raw);
       if (!maybe) throw new Error("OpenAI returned non-JSON output");
-      return JSON.parse(maybe);
+      return JSON.parse(maybe) as OpenAIResponse;
     }
   }
 
@@ -261,63 +430,94 @@ async function callOpenAI(
   }
 }
 
-async function tmdbSearchOne(ctx: { reqId: string; userId?: string | null }, searchQuery: string, tmdbType: TmdbType) {
+// ============================================================================
+// TMDB + OMDB
+// ============================================================================
+
+async function tmdbSearchOne(ctx: LogContext, searchQuery: string, tmdbType: TmdbType): Promise<TmdbSearchResult | null> {
   const encoded = encodeURIComponent(searchQuery);
   const url = `https://api.themoviedb.org/3/search/${tmdbType}?api_key=${TMDB_API_KEY}&language=en-US&query=${encoded}`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    const t = await res.text();
-    log(ctx, "TMDB search failed", { url, status: res.status, body: t.slice(0, 500) });
+  try {
+    const res = await fetchWithTimeout(url);
+    if (!res.ok) {
+      const t = await res.text();
+      log(ctx, "TMDB search failed", { url, status: res.status, body: t.slice(0, 500) });
+      return null;
+    }
+    const json = await res.json();
+    const first = json?.results?.[0];
+    if (!first?.id) return null;
+    return { tmdb_id: Number(first.id), tmdb_type: tmdbType, tmdb_title: first.title || first.name || searchQuery };
+  } catch (error) {
+    log(ctx, "TMDB search error", { searchQuery, tmdbType, error: String(error) });
     return null;
   }
-  const json = await res.json();
-  const first = json?.results?.[0];
-  if (!first?.id) return null;
-  return { tmdb_id: Number(first.id), tmdb_type: tmdbType, tmdb_title: first.title || first.name || null };
 }
 
-/**
- * NEW: Get watch providers for a specific title (US only will be selected later)
- */
-async function tmdbWatchProviders(
-  ctx: { reqId: string; userId?: string | null },
-  tmdbId: number,
-  tmdbType: TmdbType,
-) {
+async function tmdbGetDetails(ctx: LogContext, tmdbId: number, tmdbType: TmdbType): Promise<TmdbDetails | null> {
+  const url = `https://api.themoviedb.org/3/${tmdbType}/${tmdbId}?api_key=${TMDB_API_KEY}&language=en-US&append_to_response=credits,external_ids`;
+  try {
+    const res = await fetchWithTimeout(url);
+    if (!res.ok) {
+      log(ctx, "TMDB details failed", { tmdbId, tmdbType, status: res.status });
+      return null;
+    }
+    return (await res.json()) as TmdbDetails;
+  } catch (error) {
+    log(ctx, "TMDB details error", { tmdbId, tmdbType, error: String(error) });
+    return null;
+  }
+}
+
+async function tmdbWatchProviders(ctx: LogContext, tmdbId: number, tmdbType: TmdbType): Promise<any> {
   const url = `https://api.themoviedb.org/3/${tmdbType}/${tmdbId}/watch/providers?api_key=${TMDB_API_KEY}`;
-  const res = await fetch(url);
-  if (!res.ok) {
-    const t = await res.text();
-    log(ctx, "TMDB watch/providers failed", { url, status: res.status, body: t.slice(0, 300) });
+  try {
+    const res = await fetchWithTimeout(url);
+    if (!res.ok) {
+      const t = await res.text();
+      log(ctx, "TMDB watch/providers failed", { url, status: res.status, body: t.slice(0, 300) });
+      return null;
+    }
+    return await res.json();
+  } catch (error) {
+    log(ctx, "TMDB watch providers error", { tmdbId, tmdbType, error: String(error) });
     return null;
   }
-  return await res.json();
 }
 
-/**
- * NEW: Return only a link + providers list for US with availability types
- */
-function pickUSProvidersLinkAndNames(watchJson: any) {
-  const us = watchJson?.results?.US ?? null;
-  if (!us) return { 
-    link: null as string | null, 
-    providers: [] as Array<{ provider_id: number; name: string; logo_url: string | null }>,
-    providerAvailability: [] as Array<{ provider_id: number; name: string; logo_url: string | null; availability_type: string }>
-  };
+async function omdbGetDetails(ctx: LogContext, imdbId: string): Promise<OmdbResponse | null> {
+  const url = `https://www.omdbapi.com/?apikey=${OMDB_API_KEY}&i=${encodeURIComponent(imdbId)}`;
+  try {
+    const res = await fetchWithTimeout(url);
+    if (!res.ok) return null;
+    const json = (await res.json()) as OmdbResponse;
+    if (json && json.Response === "True") return json;
+    return null;
+  } catch (error) {
+    log(ctx, "OMDB error", { imdbId, error: String(error) });
+    return null;
+  }
+}
 
-  // Track providers with their availability types for DB storage
-  const providerAvailability: Array<{ provider_id: number; name: string; logo_url: string | null; availability_type: string }> = [];
-  
-  const availabilityTypes = [
-    { key: 'flatrate', type: 'subscription' },
-    { key: 'free', type: 'free' },
-    { key: 'ads', type: 'ads' },
-    { key: 'rent', type: 'rent' },
-    { key: 'buy', type: 'buy' },
+// ============================================================================
+// WATCH PROVIDERS PROCESSING
+// ============================================================================
+
+function pickProvidersForRegion(watchJson: any, region: string): WatchProvidersResult {
+  const regionData = watchJson?.results?.[region] ?? null;
+  if (!regionData) return { link: null, providers: [], providerAvailability: [] };
+
+  const providerAvailability: WatchProviderWithAvailability[] = [];
+  const availabilityTypes: Array<{ key: string; type: AvailabilityType }> = [
+    { key: "flatrate", type: "flatrate" },
+    { key: "free", type: "free" },
+    { key: "ads", type: "ads" },
+    { key: "rent", type: "rent" },
+    { key: "buy", type: "buy" },
   ];
 
   for (const { key, type } of availabilityTypes) {
-    const list = us[key];
+    const list = regionData[key];
     if (Array.isArray(list)) {
       for (const p of list) {
         if (p?.provider_id != null && p?.provider_name) {
@@ -332,70 +532,48 @@ function pickUSProvidersLinkAndNames(watchJson: any) {
     }
   }
 
-  // Deduplicated list for response (unique by provider_id)
   const seen = new Set<number>();
   const providers = providerAvailability
     .filter((p) => (seen.has(p.provider_id) ? false : (seen.add(p.provider_id), true)))
     .map(({ provider_id, name, logo_url }) => ({ provider_id, name, logo_url }));
 
-  return { link: us.link ?? null, providers, providerAvailability };
+  return { link: regionData.link ?? null, providers, providerAvailability };
 }
 
-/**
- * Store streaming providers and availability in database
- */
 async function storeStreamingProviders(
-  ctx: { reqId: string; userId?: string | null },
+  ctx: LogContext,
   supabaseAdmin: any,
   titleId: string,
-  providerAvailability: Array<{ provider_id: number; name: string; logo_url: string | null; availability_type: string }>,
-  region: string = 'US',
-  watchProviderLink: string | null = null
-) {
+  providerAvailability: WatchProviderWithAvailability[],
+  region: string,
+  watchProviderLink: string | null,
+): Promise<void> {
   if (providerAvailability.length === 0) return;
-
   try {
-    // 1. Upsert all unique providers into streaming_providers table
     const uniqueProviders = new Map<number, { tmdb_provider_id: number; name: string; logo_url: string | null }>();
     for (const p of providerAvailability) {
       if (!uniqueProviders.has(p.provider_id)) {
-        uniqueProviders.set(p.provider_id, {
-          tmdb_provider_id: p.provider_id,
-          name: p.name,
-          logo_url: p.logo_url,
-        });
+        uniqueProviders.set(p.provider_id, { tmdb_provider_id: p.provider_id, name: p.name, logo_url: p.logo_url });
       }
     }
 
     const providersToUpsert = Array.from(uniqueProviders.values());
     const { data: upsertedProviders, error: providerErr } = await supabaseAdmin
-      .from('streaming_providers')
-      .upsert(providersToUpsert, { onConflict: 'tmdb_provider_id', ignoreDuplicates: false })
-      .select('id, tmdb_provider_id');
+      .from("streaming_providers")
+      .upsert(providersToUpsert, { onConflict: "tmdb_provider_id", ignoreDuplicates: false })
+      .select("id, tmdb_provider_id");
 
     if (providerErr) {
-      log(ctx, 'Error upserting streaming_providers', providerErr);
+      log(ctx, "Error upserting streaming_providers", providerErr);
       return;
     }
 
-    // Build map of tmdb_provider_id -> our internal provider id
     const providerIdMap = new Map<number, string>();
-    for (const p of upsertedProviders ?? []) {
-      providerIdMap.set(p.tmdb_provider_id, p.id);
-    }
+    for (const p of upsertedProviders ?? []) providerIdMap.set(p.tmdb_provider_id, p.id);
 
-    // 2. Delete existing availability for this title + region (to refresh)
-    const { error: deleteErr } = await supabaseAdmin
-      .from('title_streaming_availability')
-      .delete()
-      .eq('title_id', titleId)
-      .eq('region', region);
+    const { error: deleteErr } = await supabaseAdmin.from("title_streaming_availability").delete().eq("title_id", titleId).eq("region", region);
+    if (deleteErr) log(ctx, "Error deleting old title_streaming_availability", deleteErr);
 
-    if (deleteErr) {
-      log(ctx, 'Error deleting old title_streaming_availability', deleteErr);
-    }
-
-    // 3. Insert new availability records (include watch_link for all rows)
     const availabilityRecords = providerAvailability
       .map((p) => ({
         title_id: titleId,
@@ -407,103 +585,79 @@ async function storeStreamingProviders(
       .filter((r) => r.provider_id != null);
 
     if (availabilityRecords.length > 0) {
-      const { error: insertErr } = await supabaseAdmin
-        .from('title_streaming_availability')
-        .insert(availabilityRecords);
-
-      if (insertErr) {
-        log(ctx, 'Error inserting title_streaming_availability', insertErr);
-      } else {
-        log(ctx, `Stored ${availabilityRecords.length} streaming availability records for title ${titleId}`);
-      }
+      const { error: insertErr } = await supabaseAdmin.from("title_streaming_availability").insert(availabilityRecords);
+      if (insertErr) log(ctx, "Error inserting title_streaming_availability", insertErr);
+      else log(ctx, `Stored ${availabilityRecords.length} streaming availability records for title ${titleId}`);
     }
   } catch (err) {
-    log(ctx, 'Exception in storeStreamingProviders', err);
+    log(ctx, "Exception in storeStreamingProviders", err);
   }
 }
 
+// ============================================================================
+// MEDIA TITLE ENRICHMENT
+// ============================================================================
+
 async function getOrCreateMediaTitle(
-  ctx: { reqId: string; userId?: string | null },
+  ctx: LogContext,
   supabaseAdmin: any,
   tmdbId: number,
   tmdbType: TmdbType,
   fallbackTitle: string,
-) {
-  const { data: existing, error: existingErr } = await supabaseAdmin
-    .from("media_titles")
-    .select("*")
-    .eq("tmdb_id", tmdbId)
-    .eq("tmdb_type", tmdbType)
-    .maybeSingle();
-
+  userRegion: string,
+): Promise<{ mediaTitle: MediaTitle | null; watchProviders: WatchProvidersResult }> {
+  const { data: existing, error: existingErr } = await supabaseAdmin.from("media_titles").select("*").eq("tmdb_id", tmdbId).eq("tmdb_type", tmdbType).maybeSingle();
   if (existingErr) log(ctx, "Error checking media_titles cache", existingErr);
 
   const needsEnrich =
-    existing && ((existing.imdb_rating == null && existing.imdb_id == null) || existing.director == null || existing.starring == null);
+    !existing ||
+    (existing.imdb_rating == null && existing.imdb_id == null) ||
+    existing.director == null ||
+    existing.starring == null;
 
-  if (existing && !needsEnrich) return existing;
+  const [details, watchJson] = await Promise.all([
+    needsEnrich ? tmdbGetDetails(ctx, tmdbId, tmdbType) : Promise.resolve(null),
+    tmdbWatchProviders(ctx, tmdbId, tmdbType),
+  ]);
 
-  const detailsUrl = `https://api.themoviedb.org/3/${tmdbType}/${tmdbId}?api_key=${TMDB_API_KEY}&language=en-US&append_to_response=credits,external_ids`;
-  const detailsRes = await fetch(detailsUrl);
-  if (!detailsRes.ok) {
-    log(ctx, "TMDB details failed", { tmdbId, tmdbType, status: detailsRes.status });
-    return existing ?? null;
-  }
+  const watchProviders = watchJson ? pickProvidersForRegion(watchJson, userRegion) : { link: null, providers: [], providerAvailability: [] };
+  if (!needsEnrich && existing) return { mediaTitle: existing as MediaTitle, watchProviders };
+  if (!details) return { mediaTitle: (existing as MediaTitle) ?? null, watchProviders };
 
-  const details = await detailsRes.json();
+  const imdbId = tmdbType === "movie" ? (details.imdb_id ?? null) : (details.external_ids?.imdb_id ?? null);
+  const omdbJson = imdbId ? await omdbGetDetails(ctx, imdbId) : null;
 
-  const imdbId = tmdbType === "movie" ? (details?.imdb_id ?? null) : (details?.external_ids?.imdb_id ?? null);
+  const imdbRating = omdbJson?.imdbRating && omdbJson.imdbRating !== "N/A" ? Number.parseFloat(omdbJson.imdbRating) : null;
+  const ageRating = omdbJson?.Rated && omdbJson.Rated !== "N/A" ? omdbJson.Rated : null;
 
-  let omdbJson: any = null;
-  let imdbRating: number | null = null;
-  let ageRating: string | null = null;
-
-  if (imdbId) {
-    const omdbUrl = `https://www.omdbapi.com/?apikey=${OMDB_API_KEY}&i=${encodeURIComponent(imdbId)}`;
-    const omdbRes = await fetch(omdbUrl);
-    if (omdbRes.ok) {
-      const j = await omdbRes.json();
-      if (j && j.Response === "True") {
-        omdbJson = j;
-        imdbRating = j.imdbRating && j.imdbRating !== "N/A" ? Number.parseFloat(j.imdbRating) : null;
-        ageRating = j.Rated && j.Rated !== "N/A" ? j.Rated : null;
-      }
-    }
-  }
-
-  const credits = details?.credits ?? null;
-  const castNames: string[] = Array.isArray(credits?.cast)
-    ? credits.cast.slice(0, 5).map((c: any) => c?.name).filter(Boolean)
-    : [];
+  const credits = details.credits ?? null;
+  const castNames: string[] = Array.isArray(credits?.cast) ? credits.cast.slice(0, 5).map((c: any) => c?.name).filter(Boolean) : [];
 
   let director: string | null = null;
   if (tmdbType === "movie") {
     const crew = Array.isArray(credits?.crew) ? credits.crew : [];
     director = crew.find((c: any) => c?.job === "Director")?.name ?? null;
   } else {
-    const creators = Array.isArray(details?.created_by) ? details.created_by : [];
+    const creators = Array.isArray(details.created_by) ? details.created_by : [];
     director = creators.length > 0 ? creators.map((x: any) => x?.name).filter(Boolean).slice(0, 2).join(", ") : null;
   }
 
-  const genres = (details?.genres ?? []).map((g: any) => g?.name).filter(Boolean);
-  const dateStr = tmdbType === "movie" ? (details?.release_date ?? "") : (details?.first_air_date ?? "");
+  const genres = (details.genres ?? []).map((g: any) => g?.name).filter(Boolean);
+  const dateStr = tmdbType === "movie" ? (details.release_date ?? "") : (details.first_air_date ?? "");
   const yearValue = dateStr ? Number.parseInt(String(dateStr).slice(0, 4)) : null;
-  const runtime =
-    tmdbType === "movie"
-      ? (details?.runtime ?? null)
-      : (Array.isArray(details?.episode_run_time) ? (details.episode_run_time[0] ?? null) : null);
+  const runtime = tmdbType === "movie" ? (details.runtime ?? null) : Array.isArray(details.episode_run_time) ? (details.episode_run_time[0] ?? null) : null;
 
   const posterBase = "https://image.tmdb.org/t/p/w500";
-  const posterUrl = details?.poster_path ? posterBase + details.poster_path : null;
-  const backdropUrl = details?.backdrop_path ? posterBase + details.backdrop_path : null;
+  const posterUrl = details.poster_path ? posterBase + details.poster_path : null;
+  const backdropUrl = details.backdrop_path ? posterBase + details.backdrop_path : null;
 
-  const title = tmdbType === "movie" ? (details?.title ?? fallbackTitle) : (details?.name ?? fallbackTitle);
+  const title = tmdbType === "movie" ? (details.title ?? fallbackTitle) : (details.name ?? fallbackTitle);
 
   const row = {
     tmdb_id: tmdbId,
     tmdb_type: tmdbType,
     title,
-    overview: details?.overview ?? null,
+    overview: details.overview ?? null,
     genres,
     year: yearValue,
     runtime_minutes: runtime,
@@ -523,40 +677,116 @@ async function getOrCreateMediaTitle(
     const { data: updated, error: upErr } = await supabaseAdmin.from("media_titles").update(row).eq("id", existing.id).select().single();
     if (upErr) {
       log(ctx, "Error updating existing media_titles", upErr);
-      return existing;
+      return { mediaTitle: existing as MediaTitle, watchProviders };
     }
-    return updated;
+    return { mediaTitle: updated as MediaTitle, watchProviders };
   }
 
-  const { data: inserted, error: insertErr } = await supabaseAdmin
-    .from("media_titles")
-    .insert({ ...row, created_at: nowIso() })
-    .select()
-    .single();
-
+  const { data: inserted, error: insertErr } = await supabaseAdmin.from("media_titles").insert({ ...row, created_at: nowIso() }).select().single();
   if (insertErr) {
     log(ctx, "Error inserting media_titles", insertErr);
     const { data: again } = await supabaseAdmin.from("media_titles").select("*").eq("tmdb_id", tmdbId).eq("tmdb_type", tmdbType).maybeSingle();
-    return again ?? null;
+    return { mediaTitle: (again as MediaTitle) ?? null, watchProviders };
   }
-
-  return inserted;
+  return { mediaTitle: inserted as MediaTitle, watchProviders };
 }
+
+// ============================================================================
+// USER REGION DETECTION
+// ============================================================================
+
+async function getUserRegion(ctx: LogContext, supabaseUser: any, profileId: string): Promise<string> {
+  try {
+    const { data: profile } = await supabaseUser.from("profiles").select("country_code, user_id").eq("id", profileId).maybeSingle();
+    if (profile?.country_code) {
+      log(ctx, `Using profile country_code: ${profile.country_code}`);
+      return profile.country_code;
+    }
+    if (profile?.user_id) {
+      const { data: appUser } = await supabaseUser.from("app_users").select("region").eq("id", profile.user_id).maybeSingle();
+      if (appUser?.region) {
+        log(ctx, `Using app_users region: ${appUser.region}`);
+        return appUser.region;
+      }
+    }
+    log(ctx, "No region found, defaulting to US");
+    return "US";
+  } catch (error) {
+    log(ctx, "Error getting user region, defaulting to US", error);
+    return "US";
+  }
+}
+
+// ============================================================================
+// CANDIDATE PROCESSING
+// ============================================================================
+
+async function processCandidatesParallel(
+  ctx: LogContext,
+  items: OpenAIItem[],
+  supabaseAdmin: any,
+  contentTypes: TmdbType[],
+  excludedNormalizedTitles: Set<string>,
+  excludedTmdbKeys: Set<string>,
+  chosenNorm: Set<string>,
+  userRegion: string,
+  maxChoose: number,
+): Promise<Array<{ item: OpenAIItem; mediaRow: MediaTitle; watchProviders: WatchProvidersResult }>> {
+  const searchPromises = items.map(async (it) => {
+    const title = String(it?.title || "").trim();
+    if (!title) return null;
+    const norm = normalizeTitle(title);
+    if (chosenNorm.has(norm) || excludedNormalizedTitles.has(norm)) return null;
+
+    const tmdbTypeRaw = String(it?.tmdb_type || "").toLowerCase().trim();
+    const tmdbType: TmdbType | null = tmdbTypeRaw === "movie" || tmdbTypeRaw === "tv" ? (tmdbTypeRaw as TmdbType) : null;
+    const typeToUse: TmdbType | null = tmdbType && contentTypes.includes(tmdbType) ? tmdbType : null;
+    if (!typeToUse) return null;
+
+    const searchQuery = String(it?.tmdb_search_query || it?.title || "").trim();
+    const hit = await tmdbSearchOne(ctx, searchQuery, typeToUse);
+    if (!hit) return null;
+
+    const tmdbKey = `${hit.tmdb_type}:${hit.tmdb_id}`;
+    if (excludedTmdbKeys.has(tmdbKey)) return null;
+
+    return { item: it, hit, norm, tmdbKey };
+  });
+
+  const searchResults = await Promise.all(searchPromises);
+  const validSearchResults = searchResults.filter((r) => r !== null) as Array<{ item: OpenAIItem; hit: TmdbSearchResult; norm: string; tmdbKey: string }>;
+
+  const enrichPromises = validSearchResults.slice(0, maxChoose).map(async ({ item, hit, norm, tmdbKey }) => {
+    const { mediaTitle, watchProviders } = await getOrCreateMediaTitle(ctx, supabaseAdmin, hit.tmdb_id, hit.tmdb_type, item.title, userRegion);
+    if (!mediaTitle) return null;
+
+    excludedNormalizedTitles.add(norm);
+    excludedTmdbKeys.add(tmdbKey);
+    chosenNorm.add(norm);
+
+    return { item, mediaRow: mediaTitle, watchProviders };
+  });
+
+  const enrichResults = await Promise.all(enrichPromises);
+  return enrichResults.filter((r) => r !== null) as Array<{ item: OpenAIItem; mediaRow: MediaTitle; watchProviders: WatchProvidersResult }>;
+}
+
+// ============================================================================
+// MAIN HANDLER
+// ============================================================================
 
 serve(async (req: Request) => {
   const reqId = crypto.randomUUID();
   let userId: string | null = null;
-  const ctx = { reqId, userId };
+  let profileId: string | undefined = undefined;
+  const ctx: LogContext = { reqId };
 
   if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: CORS_HEADERS });
 
   try {
     const authHeader = req.headers.get("Authorization") ?? "";
     if (!authHeader.toLowerCase().startsWith("bearer ")) {
-      return new Response(JSON.stringify({ error: "Missing Authorization Bearer token" }), {
-        status: 401,
-        headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
-      });
+      return new Response(JSON.stringify({ error: "Missing Authorization Bearer token" }), { status: 401, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
     }
 
     const jwt = authHeader.slice(7);
@@ -564,45 +794,51 @@ serve(async (req: Request) => {
     const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
     const { data: userInfo, error: userErr } = await supabaseUser.auth.getUser(jwt);
-    if (!userErr) userId = userInfo?.user?.id ?? null;
+    if (userErr || !userInfo?.user) {
+      return new Response(JSON.stringify({ error: "Invalid or expired token" }), { status: 401, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
+    }
+
+    userId = userInfo.user.id;
     ctx.userId = userId;
 
-    const body = await req.json();
-    const profile_id: string = body.profile_id;
-    const session_type: SessionType = body.session_type;
-    const mood_input: any = body.mood_input ?? {};
-    const content_types: TmdbType[] = parseContentTypes(body);
-
-    if (!profile_id || !session_type) {
-      return new Response(JSON.stringify({ error: "Missing profile_id or session_type" }), {
-        status: 400,
-        headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
-      });
+    const rawBody = await req.json();
+    const validationResult = RequestBodySchema.safeParse(rawBody);
+    if (!validationResult.success) {
+      return new Response(JSON.stringify({ error: "Invalid request body", details: validationResult.error.errors }), { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
     }
 
-    log(ctx, "Incoming request", { profile_id, session_type, content_types });
+    const body = validationResult.data;
+    profileId = body.profile_id;
+    ctx.profileId = profileId;
 
-    const { data: profile, error: profileErr } = await supabaseUser.from("profiles").select("*").eq("id", profile_id).single();
-    if (profileErr || !profile) {
-      log(ctx, "Profile not found or unauthorized", profileErr);
-      return new Response(JSON.stringify({ error: "Profile not found or not owned by user" }), {
-        status: 404,
-        headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
-      });
-    }
+    const session_type = body.session_type as SessionType;
+    const mood_input = body.mood_input;
+    const content_types = parseContentTypes(body);
 
-    const { data: prefs } = await supabaseUser.from("profile_preferences").select("answers").eq("profile_id", profile_id).maybeSingle();
+    log(ctx, "Incoming request", { profile_id: profileId, session_type, content_types });
 
     const windowStart = daysAgoIso(HISTORY_WINDOW_DAYS);
+    const [profileResult, prefsResult, interactionsResult, userRegion] = await Promise.all([
+      supabaseUser.from("profiles").select("*").eq("id", profileId).single(),
+      supabaseUser.from("profile_preferences").select("answers").eq("profile_id", profileId).maybeSingle(),
+      supabaseAdmin
+        .from("profile_title_interactions")
+        .select(`title_id, action, rating, extra, created_at, title:media_titles(title, tmdb_id, tmdb_type, genres)`)
+        .eq("profile_id", profileId)
+        .gte("created_at", windowStart)
+        .order("created_at", { ascending: false })
+        .limit(MAX_HISTORY_FETCH),
+      getUserRegion(ctx, supabaseUser, profileId),
+    ]);
 
-    const { data: interactions, error: interactionsErr } = await supabaseAdmin
-      .from("profile_title_interactions")
-      .select(`title_id, action, rating, extra, created_at, title:media_titles(title, tmdb_id, tmdb_type, genres)`)
-      .eq("profile_id", profile_id)
-      .gte("created_at", windowStart)
-      .order("created_at", { ascending: false })
-      .limit(MAX_HISTORY_FETCH);
+    const { data: profile, error: profileErr } = profileResult;
+    if (profileErr || !profile) {
+      log(ctx, "Profile not found or unauthorized", profileErr);
+      return new Response(JSON.stringify({ error: "Profile not found or not owned by user" }), { status: 404, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
+    }
 
+    const { data: prefs } = prefsResult;
+    const { data: interactions, error: interactionsErr } = interactionsResult;
     if (interactionsErr) log(ctx, "Interactions fetch error", interactionsErr);
 
     const hardExcludedNormalized = new Set<string>();
@@ -620,13 +856,13 @@ serve(async (req: Request) => {
     const negativeNotes: Array<{ text: string; w: number; at: string }> = [];
 
     for (const i of interactions ?? []) {
-      const t = i.title;
+      const t = (i as any).title;
       const titleStr = t?.title ? String(t.title) : "";
       const norm = titleStr ? normalizeTitle(titleStr) : "";
-      const action = String(i.action) as InteractionAction;
-      const rating = i.rating == null ? null : Number(i.rating);
-      const extra = i.extra ?? {};
-      const createdAt = String(i.created_at ?? "");
+      const action = String((i as any).action) as InteractionAction;
+      const rating = (i as any).rating == null ? null : Number((i as any).rating);
+      const extra = (i as any).extra ?? {};
+      const createdAt = String((i as any).created_at ?? "");
       const w = createdAt ? getFeedbackWeight(createdAt) : 0.25;
       const sentiment = getFeedbackSentiment(action, rating, extra);
       const quickTags: string[] = Array.isArray(extra?.quick_tags) ? extra.quick_tags.map((x: any) => String(x)) : [];
@@ -666,14 +902,6 @@ serve(async (req: Request) => {
       }
     }
 
-    function topKeysByScore(m: Map<string, number>, max: number) {
-      return Array.from(m.entries()).sort((a, b) => b[1] - a[1]).slice(0, max).map((x) => x[0]);
-    }
-
-    function topNotes(list: Array<{ text: string; w: number; at: string }>, max: number) {
-      return list.sort((a, b) => b.w - a.w).slice(0, max).map((x) => x.text);
-    }
-
     const positiveGenres = topKeysByScore(posGenreScore, GENRES_MAX);
     const negativeGenres = topKeysByScore(negGenreScore, GENRES_MAX);
     const positiveTags = topKeysByScore(posTagScore, 20);
@@ -684,22 +912,16 @@ serve(async (req: Request) => {
     const { data: recentSessions, error: sessErr } = await supabaseAdmin
       .from("recommendation_sessions")
       .select("id, created_at")
-      .eq("profile_id", profile_id)
+      .eq("profile_id", profileId)
       .gte("created_at", daysAgoIso(90))
       .order("created_at", { ascending: false })
       .limit(60);
-
     if (sessErr) log(ctx, "Recent sessions fetch error", sessErr);
 
     const sessionIds = (recentSessions ?? []).map((s: any) => s.id);
     let recentItems: any[] = [];
     if (sessionIds.length > 0) {
-      const { data: itemsData, error: itemsErr } = await supabaseAdmin
-        .from("recommendation_items")
-        .select(`title_id, title:media_titles(title, tmdb_id, tmdb_type)`)
-        .in("session_id", sessionIds)
-        .limit(400);
-
+      const { data: itemsData, error: itemsErr } = await supabaseAdmin.from("recommendation_items").select(`title_id, title:media_titles(title, tmdb_id, tmdb_type)`).in("session_id", sessionIds).limit(400);
       if (itemsErr) log(ctx, "Recent recommendation_items fetch error", itemsErr);
       recentItems = itemsData ?? [];
     }
@@ -722,14 +944,11 @@ serve(async (req: Request) => {
       recentRecommended: recommendedNormalized.size,
       positiveGenresCount: positiveGenres.length,
       negativeGenresCount: negativeGenres.length,
-      positiveTagsCount: positiveTags.length,
-      negativeTagsCount: negativeTags.length,
-      positiveNotesCount: positiveNotesTop.length,
-      negativeNotesCount: negativeNotesTop.length,
+      userRegion,
     });
 
     const promptObj = {
-      profile_id,
+      profile_id: profileId,
       session_type,
       content_types,
       profile_preferences: prefs?.answers ?? {},
@@ -759,42 +978,7 @@ serve(async (req: Request) => {
 
     const positiveSignals = { genres: positiveGenres, notes: positiveNotesTop, tags: positiveTags };
     const negativeSignals = { genres: negativeGenres, notes: negativeNotesTop, tags: negativeTags, titles: negativeTitlesForPrompt };
-
-    const chosen: Array<{ item: any; mediaRow: any }> = [];
     const chosenNorm = new Set<string>();
-
-    async function processCandidates(items: any[]) {
-      for (const it of items) {
-        if (chosen.length >= FINAL_COUNT) break;
-
-        const title = String(it?.title || "").trim();
-        if (!title) continue;
-
-        const norm = normalizeTitle(title);
-        if (chosenNorm.has(norm)) continue;
-        if (excludedNormalizedTitles.has(norm)) continue;
-
-        const tmdbTypeRaw = String(it?.tmdb_type || "").toLowerCase().trim();
-        const tmdbType: TmdbType | null = tmdbTypeRaw === "movie" || tmdbTypeRaw === "tv" ? (tmdbTypeRaw as TmdbType) : null;
-        const typeToUse: TmdbType | null = tmdbType && content_types.includes(tmdbType) ? tmdbType : null;
-        if (!typeToUse) continue;
-
-        const searchQuery = String(it?.tmdb_search_query || it?.title || "").trim();
-        const hit = await tmdbSearchOne(ctx, searchQuery, typeToUse);
-        if (!hit) continue;
-
-        const tmdbKey = `${hit.tmdb_type}:${hit.tmdb_id}`;
-        if (excludedTmdbKeys.has(tmdbKey)) continue;
-
-        const mediaRow = await getOrCreateMediaTitle(ctx, supabaseAdmin, hit.tmdb_id, hit.tmdb_type, title);
-        if (!mediaRow) continue;
-
-        excludedNormalizedTitles.add(norm);
-        excludedTmdbKeys.add(tmdbKey);
-        chosenNorm.add(norm);
-        chosen.push({ item: it, mediaRow });
-      }
-    }
 
     const payload1 = await callOpenAI(
       ctx,
@@ -807,22 +991,15 @@ serve(async (req: Request) => {
       negativeSignals,
     );
 
-    await processCandidates(payload1.items);
-
+    let chosen = await processCandidatesParallel(ctx, payload1.items, supabaseAdmin, content_types, excludedNormalizedTitles, excludedTmdbKeys, chosenNorm, userRegion, FINAL_COUNT);
     let finalMoodLabel = payload1.mood_label ?? "";
     let finalMoodTags = Array.isArray(payload1.mood_tags) ? payload1.mood_tags : [];
 
     if (chosen.length < FINAL_COUNT) {
       const missing = FINAL_COUNT - chosen.length;
       log(ctx, "Top-up needed", { missing });
-
       const chosenTitles = chosen.map((c) => String(c.item?.title || "")).filter(Boolean);
-      const topupPromptObj = {
-        ...promptObj,
-        topup_missing_count: missing,
-        already_selected_titles: chosenTitles,
-        instruction: `Return exactly ${missing} additional items that are not excluded and not already selected.`,
-      };
+      const topupPromptObj = { ...promptObj, topup_missing_count: missing, already_selected_titles: chosenTitles, instruction: `Return exactly ${missing} additional items that are not excluded and not already selected.` };
 
       for (let attempt = 0; attempt < TOPUP_MAX_ATTEMPTS; attempt++) {
         const payload2 = await callOpenAI(
@@ -839,16 +1016,14 @@ serve(async (req: Request) => {
         if (!finalMoodLabel && payload2.mood_label) finalMoodLabel = payload2.mood_label;
         if ((!finalMoodTags || finalMoodTags.length === 0) && Array.isArray(payload2.mood_tags)) finalMoodTags = payload2.mood_tags;
 
-        await processCandidates(payload2.items);
+        const topupChosen = await processCandidatesParallel(ctx, payload2.items, supabaseAdmin, content_types, excludedNormalizedTitles, excludedTmdbKeys, chosenNorm, userRegion, missing);
+        chosen = chosen.concat(topupChosen);
         if (chosen.length >= FINAL_COUNT) break;
       }
     }
 
     if (chosen.length === 0) {
-      return new Response(JSON.stringify({ error: "Could not generate recommendations after filtering" }), {
-        status: 500,
-        headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
-      });
+      return new Response(JSON.stringify({ error: "Could not generate recommendations after filtering" }), { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
     }
 
     const finalChosen = chosen.slice(0, FINAL_COUNT);
@@ -866,20 +1041,15 @@ serve(async (req: Request) => {
         recent_feedback_notes_negative: negativeNotesTop,
       },
       candidates_payload: payload1,
-      selected_titles: finalChosen.map((c) => ({
-        title: c.mediaRow?.title,
-        tmdb_id: c.mediaRow?.tmdb_id,
-        tmdb_type: c.mediaRow?.tmdb_type,
-        match_score: c.item?.match_score ?? null,
-      })),
+      selected_titles: finalChosen.map((c) => ({ title: c.mediaRow?.title, tmdb_id: c.mediaRow?.tmdb_id, tmdb_type: c.mediaRow?.tmdb_type, match_score: c.item?.match_score ?? null })),
     };
 
     const { data: session, error: sessionErr } = await supabaseAdmin
       .from("recommendation_sessions")
       .insert({
-        profile_id,
+        profile_id: profileId,
         session_type,
-        input_payload: { ...(mood_input ?? {}), content_types },
+        input_payload: { ...(mood_input as any), content_types },
         openai_response: sessionOpenAiResponse,
         mood_label: finalMoodLabel,
         mood_tags: finalMoodTags,
@@ -891,16 +1061,13 @@ serve(async (req: Request) => {
 
     if (sessionErr || !session) {
       log(ctx, "Failed to insert recommendation_sessions", sessionErr);
-      return new Response(JSON.stringify({ error: "Failed to create recommendation session" }), {
-        status: 500,
-        headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
-      });
+      return new Response(JSON.stringify({ error: "Failed to create recommendation session" }), { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
     }
 
     const recItems = finalChosen.map((c, idx) => ({
       session_id: session.id,
       title_id: c.mediaRow.id,
-      rank_index: idx + 1,
+      rank_index: idx, // 0-based (matches schema docs)
       openai_reason: c.item?.reason ?? null,
       match_score: c.item?.match_score ?? null,
       created_at: nowIso(),
@@ -909,79 +1076,51 @@ serve(async (req: Request) => {
     const { error: itemsErr } = await supabaseAdmin.from("recommendation_items").insert(recItems);
     if (itemsErr) log(ctx, "Failed to insert recommendation_items", itemsErr);
 
-    /**
-     * UPDATED: Build cards with watch_provider_link + watch_providers (US only).
-     * This adds 1 TMDB call per chosen title (5 calls).
-     * Also stores providers in database for future access.
-     */
-    const cards = await Promise.all(
-      finalChosen.map(async (c) => {
-        const t = c.mediaRow;
-
-        let watch_provider_link: string | null = null;
-        let watch_providers: Array<{ provider_id: number; name: string; logo_url: string | null }> = [];
-
-        if (t.tmdb_id && t.tmdb_type) {
-          const watchJson = await tmdbWatchProviders(ctx, t.tmdb_id, t.tmdb_type);
-          const picked = watchJson ? pickUSProvidersLinkAndNames(watchJson) : { link: null, providers: [], providerAvailability: [] };
-          watch_provider_link = picked.link;
-          watch_providers = picked.providers;
-          
-          // Store providers in database for future access (including watch link)
-          if (picked.providerAvailability.length > 0) {
-            await storeStreamingProviders(ctx, supabaseAdmin, t.id, picked.providerAvailability, 'US', watch_provider_link);
-          }
-        }
-
-        let duration = "";
-        if (t.runtime_minutes) {
-          const hours = Math.floor(t.runtime_minutes / 60);
-          const mins = t.runtime_minutes % 60;
-          duration = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
-        }
-
-        return {
-          title_id: t.id,
-          title: t.title,
-          year: t.year?.toString() ?? "",
-          duration,
-          genres: t.genres ?? [],
-          rating: t.imdb_rating?.toString() ?? "",
-          age_rating: t.age_rating ?? "",
-          quote: c.item?.reason ?? "",
-          description: t.overview ?? "",
-          poster_url: t.poster_url,
-          match_score: c.item?.match_score ?? null,
-          tmdb_type: t.tmdb_type,
-          director: t.director ?? "",
-          starring: t.starring ?? [],
-
-          // NEW
-          watch_provider_link,
-          watch_providers,
-        };
-      }),
+    await Promise.all(
+      finalChosen.map((c) =>
+        c.watchProviders.providerAvailability.length > 0
+          ? storeStreamingProviders(ctx, supabaseAdmin, c.mediaRow.id, c.watchProviders.providerAvailability, userRegion, c.watchProviders.link)
+          : Promise.resolve(),
+      ),
     );
 
+    const cards: RecommendationCard[] = finalChosen.map((c) => {
+      const t = c.mediaRow;
+      let duration = "";
+      if (t.runtime_minutes) {
+        const hours = Math.floor(t.runtime_minutes / 60);
+        const mins = t.runtime_minutes % 60;
+        duration = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+      }
+      return {
+        title_id: t.id,
+        title: t.title,
+        year: t.year?.toString() ?? "",
+        duration,
+        genres: t.genres ?? [],
+        rating: t.imdb_rating?.toString() ?? "",
+        age_rating: t.age_rating ?? "",
+        quote: c.item?.reason ?? "",
+        description: t.overview ?? "",
+        poster_url: t.poster_url,
+        match_score: c.item?.match_score ?? null,
+        tmdb_type: t.tmdb_type,
+        director: t.director ?? "",
+        starring: t.starring ?? [],
+        watch_provider_link: c.watchProviders.link,
+        watch_providers: c.watchProviders.providers,
+      };
+    });
+
+    log(ctx, "Successfully created recommendation session", { sessionId: session.id, cardsCount: cards.length, userRegion });
+
     return new Response(
-      JSON.stringify({
-        id: session.id,
-        profile_id,
-        session_type,
-        mood_input: { ...(mood_input ?? {}), content_types },
-        created_at: session.created_at,
-        cards,
-      }),
-      {
-        status: 200,
-        headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
-      },
+      JSON.stringify({ id: session.id, profile_id: profileId, session_type, mood_input: { ...(mood_input as any), content_types }, created_at: session.created_at, cards }),
+      { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
     );
   } catch (err) {
     console.error(err);
-    return new Response(JSON.stringify({ error: "Internal server error", details: String(err) }), {
-      status: 500,
-      headers: { ...CORS_HEADERS, "Content-Type": "application/json" },
-    });
+    log(ctx, "Fatal error in recommendation session creation", { error: String(err) });
+    return new Response(JSON.stringify({ error: "Internal server error", details: String(err) }), { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
   }
 });
