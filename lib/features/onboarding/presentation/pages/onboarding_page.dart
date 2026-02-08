@@ -2,10 +2,12 @@ import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:country_picker/country_picker.dart';
 import 'package:go_router/go_router.dart';
 import 'package:vibestream/core/routing/app_router.dart';
 import 'package:vibestream/core/theme/app_theme.dart';
 import 'package:vibestream/core/utils/snackbar_utils.dart';
+import 'package:vibestream/features/auth/data/app_user_service.dart';
 import 'package:vibestream/features/profiles/data/profile_service.dart';
 import 'package:vibestream/features/recommendations/data/recommendation_service.dart';
 import 'package:vibestream/features/recommendations/data/interaction_service.dart';
@@ -24,14 +26,18 @@ class _OnboardingPageState extends State<OnboardingPage> {
   // Page 3 (movie swipe personalization) is intentionally hidden for now.
   // We keep the code below for later re-enable, but the user will complete
   // onboarding on page 2.
-  static const int _totalPages = 2;
+  static const int _totalPages = 3;
 
   // Services
   final ProfileService _profileService = ProfileService();
   final InteractionService _interactionService = InteractionService();
+  final AppUserService _appUserService = AppUserService();
 
   // Profile state
   String? _activeProfileId;
+
+  // Country selection (new step)
+  Country? _selectedCountry;
 
   // Selections for taste preferences (page 2)
   int? _movieNightSelection = 0;
@@ -111,7 +117,24 @@ class _OnboardingPageState extends State<OnboardingPage> {
     'movie_night': _movieNightKeys[_movieNightSelection ?? 0],
     'discover': _discoverKeys[_discoverSelection ?? 0],
     'length': _lengthKeys[_lengthSelection ?? 0],
+    if (_selectedCountry != null) ...{
+      'country_code': _selectedCountry!.countryCode,
+      'country_name': _selectedCountry!.name,
+    },
   };
+
+  Future<void> _persistCountrySelectionIfAny() async {
+    final selected = _selectedCountry;
+    if (selected == null) return;
+
+    // Store country code at the account level (app_users.region)
+    // and also store (code+name) inside profile_preferences.answers.
+    try {
+      await _appUserService.updateRegion(region: selected.countryCode);
+    } catch (e) {
+      debugPrint('OnboardingPage: Failed to update app user region: $e');
+    }
+  }
 
   Future<void> _savePreferencesAndLoadCards() async {
     if (_activeProfileId == null) {
@@ -169,6 +192,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
     });
 
     try {
+      await _persistCountrySelectionIfAny();
       final preferences = _buildPreferencesJson();
       final success = await _profileService.savePreferences(_activeProfileId!, preferences);
       if (!success) {
@@ -284,6 +308,11 @@ class _OnboardingPageState extends State<OnboardingPage> {
   }
 
   void _nextPage() {
+    if (_currentPage == 1 && _selectedCountry == null) {
+      SnackbarUtils.showError(context, 'Please select your country to continue.');
+      return;
+    }
+
     if (_currentPage < _totalPages - 1) {
       setState(() => _currentPage++);
       return;
@@ -356,6 +385,7 @@ class _OnboardingPageState extends State<OnboardingPage> {
 
       setState(() => _isSavingPreferences = true);
       try {
+        await _persistCountrySelectionIfAny();
         final preferences = _buildPreferencesJson();
         await _profileService.savePreferences(_activeProfileId!, preferences);
       } catch (e) {
@@ -487,10 +517,20 @@ class _OnboardingPageState extends State<OnboardingPage> {
       case 0:
         return _buildExplainMagicPage(context, isDark);
       case 1:
+        return _buildCountrySelectionPage(context, isDark);
+      case 2:
         return _buildTastePreferencesPage(context, isDark);
       default:
         return _buildExplainMagicPage(context, isDark);
     }
+  }
+
+  Widget _buildCountrySelectionPage(BuildContext context, bool isDark) {
+    return OnboardingCountryStep(
+      selected: _selectedCountry,
+      isDark: isDark,
+      onSelected: (country) => setState(() => _selectedCountry = country),
+    );
   }
 
   Widget _buildExplainMagicPage(BuildContext context, bool isDark) {
@@ -1207,6 +1247,247 @@ class OnboardingProgressBar extends StatelessWidget {
                 color: AppColors.accent,
                 borderRadius: BorderRadius.circular(2),
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class OnboardingCountryStep extends StatefulWidget {
+  const OnboardingCountryStep({super.key, required this.selected, required this.onSelected, required this.isDark});
+
+  final Country? selected;
+  final ValueChanged<Country> onSelected;
+  final bool isDark;
+
+  @override
+  State<OnboardingCountryStep> createState() => _OnboardingCountryStepState();
+}
+
+class _OnboardingCountryStepState extends State<OnboardingCountryStep> {
+  late final List<Country> _allCountries;
+  late List<Country> _filteredCountries;
+  String _query = '';
+
+  static const List<String> _suggestedCountryCodes = [
+    // North America
+    'US', 'CA', 'MX',
+    // Western/Northern Europe (practical “top picks”)
+    'GB', 'IE', 'FR', 'DE', 'NL', 'BE', 'LU', 'CH', 'AT', 'ES', 'PT', 'IT',
+    'SE', 'NO', 'DK', 'FI', 'IS',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _allCountries = CountryService().getAll();
+    _filteredCountries = List.of(_allCountries);
+  }
+
+  void _filter(String query) {
+    setState(() {
+      _query = query;
+      final q = query.trim().toLowerCase();
+      if (q.isEmpty) {
+        _filteredCountries = List.of(_allCountries);
+        return;
+      }
+      _filteredCountries = _allCountries.where((c) {
+        final name = c.name.toLowerCase();
+        return name.contains(q) || c.countryCode.toLowerCase().contains(q);
+      }).toList();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = widget.isDark;
+    final textSecondary = isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary;
+    final textColor = isDark ? AppColors.darkText : AppColors.lightText;
+    final surface = isDark ? AppColors.darkSurfaceVariant : AppColors.lightSurface;
+    final border = isDark ? Colors.transparent : AppColors.lightBorder;
+
+    final suggested = <Country>[];
+    final byCode = {for (final c in _allCountries) c.countryCode: c};
+    for (final code in _suggestedCountryCodes) {
+      final c = byCode[code];
+      if (c != null) suggested.add(c);
+    }
+
+    final selectedCode = widget.selected?.countryCode;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Where are you right now?',
+          style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w700),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'We’ll use this to tailor streaming availability for your region.',
+          style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: textSecondary),
+        ),
+        const SizedBox(height: 16),
+        Container(
+          decoration: BoxDecoration(
+            color: surface,
+            borderRadius: BorderRadius.circular(AppRadius.lg),
+            border: Border.all(color: border, width: 1),
+          ),
+          child: TextField(
+            onChanged: _filter,
+            decoration: InputDecoration(
+              hintText: 'Search country',
+              hintStyle: TextStyle(color: textSecondary),
+              prefixIcon: Icon(Icons.search, color: textSecondary),
+              border: InputBorder.none,
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+        if (_query.trim().isEmpty) ...[
+          Text(
+            'Suggested',
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700, color: textColor),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: suggested.map((c) {
+              final isSelected = c.countryCode == selectedCode;
+              return _CountryChip(
+                country: c,
+                isSelected: isSelected,
+                onTap: () => widget.onSelected(c),
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 18),
+          Text(
+            'All countries',
+            style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700, color: textColor),
+          ),
+          const SizedBox(height: 10),
+        ],
+        Expanded(
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(AppRadius.lg),
+            child: ListView.separated(
+              itemCount: _filteredCountries.length,
+              separatorBuilder: (_, __) => Divider(height: 1, color: (isDark ? AppColors.darkSurfaceVariant : AppColors.lightBorder).withValues(alpha: 0.6)),
+              itemBuilder: (context, index) {
+                final c = _filteredCountries[index];
+                final isSelected = c.countryCode == selectedCode;
+                return _CountryListTile(
+                  country: c,
+                  isSelected: isSelected,
+                  onTap: () => widget.onSelected(c),
+                );
+              },
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+      ],
+    );
+  }
+}
+
+class _CountryChip extends StatelessWidget {
+  const _CountryChip({required this.country, required this.isSelected, required this.onTap});
+
+  final Country country;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final bg = isDark ? AppColors.darkSurfaceVariant : AppColors.lightSurface;
+    final border = isSelected ? AppColors.accent : (isDark ? Colors.transparent : AppColors.lightBorder);
+    final textColor = isDark ? AppColors.darkText : AppColors.lightText;
+
+    return InkWell(
+      onTap: onTap,
+      splashFactory: NoSplash.splashFactory,
+      highlightColor: Colors.transparent,
+      hoverColor: Colors.transparent,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: border, width: isSelected ? 2 : 1),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(country.flagEmoji, style: const TextStyle(fontSize: 16)),
+            const SizedBox(width: 8),
+            Text(
+              country.name,
+              style: Theme.of(context).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w600, color: textColor),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CountryListTile extends StatelessWidget {
+  const _CountryListTile({required this.country, required this.isSelected, required this.onTap});
+
+  final Country country;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final textColor = isDark ? AppColors.darkText : AppColors.lightText;
+    final subtitleColor = isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary;
+
+    return InkWell(
+      onTap: onTap,
+      splashFactory: NoSplash.splashFactory,
+      highlightColor: Colors.transparent,
+      hoverColor: Colors.transparent,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        child: Row(
+          children: [
+            Text(country.flagEmoji, style: const TextStyle(fontSize: 20)),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    country.name,
+                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w600, color: textColor),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    country.countryCode,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(color: subtitleColor),
+                  ),
+                ],
+              ),
+            ),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 160),
+              child: isSelected
+                  ? const Icon(Icons.check_circle, key: ValueKey('check'), color: AppColors.accent, size: 22)
+                  : Icon(Icons.chevron_right, key: const ValueKey('chev'), color: subtitleColor, size: 22),
             ),
           ],
         ),

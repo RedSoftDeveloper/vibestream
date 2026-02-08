@@ -89,4 +89,22 @@ class AppUserService {
       return false;
     }
   }
+
+  Future<bool> updateRegion({required String region}) async {
+    try {
+      final authUser = SupabaseConfig.auth.currentUser;
+      if (authUser == null) return false;
+
+      await SupabaseConfig.client
+          .from('app_users')
+          .update({'region': region})
+          .eq('id', authUser.id);
+
+      clearCache();
+      return true;
+    } catch (e) {
+      debugPrint('AppUserService updateRegion error: $e');
+      return false;
+    }
+  }
 }
