@@ -3,6 +3,8 @@ class UserProfile {
   final String userId;
   final String name;
   final String emoji;
+  final String? countryCode;
+  final String? countryName;
   final DateTime createdAt;
   final DateTime updatedAt;
 
@@ -11,6 +13,8 @@ class UserProfile {
     required this.userId,
     required this.name,
     this.emoji = '👤',
+    this.countryCode,
+    this.countryName,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -20,6 +24,8 @@ class UserProfile {
     String? userId,
     String? name,
     String? emoji,
+    String? countryCode,
+    String? countryName,
     DateTime? createdAt,
     DateTime? updatedAt,
   }) => UserProfile(
@@ -27,6 +33,8 @@ class UserProfile {
     userId: userId ?? this.userId,
     name: name ?? this.name,
     emoji: emoji ?? this.emoji,
+    countryCode: countryCode ?? this.countryCode,
+    countryName: countryName ?? this.countryName,
     createdAt: createdAt ?? this.createdAt,
     updatedAt: updatedAt ?? this.updatedAt,
   );
@@ -37,6 +45,8 @@ class UserProfile {
     'user_id': userId,
     'name': name,
     'emoji': emoji,
+    'country_code': countryCode,
+    'country_name': countryName,
     'created_at': createdAt.toIso8601String(),
     'updated_at': updatedAt.toIso8601String(),
   };
@@ -57,6 +67,8 @@ class UserProfile {
       userId: json['user_id'] as String? ?? '',
       name: json['name'] as String,
       emoji: emoji,
+      countryCode: (json['country_code'] ?? json['countryCode']) as String?,
+      countryName: (json['country_name'] ?? json['countryName']) as String?,
       createdAt: createdAtStr != null ? DateTime.parse(createdAtStr as String) : DateTime.now(),
       updatedAt: updatedAtStr != null ? DateTime.parse(updatedAtStr as String) : DateTime.now(),
     );

@@ -5,20 +5,24 @@ import 'package:vibestream/core/services/history_service.dart';
 import 'package:vibestream/core/services/home_refresh_service.dart';
 import 'package:vibestream/features/auth/data/app_user_service.dart';
 import 'package:vibestream/features/auth/data/auth_service.dart';
+import 'package:vibestream/features/profiles/data/profile_service.dart';
 import 'package:vibestream/features/settings/presentation/cubits/settings_state.dart';
 
 class SettingsCubit extends Cubit<SettingsState> {
   final AppUserService _appUserService;
   final AuthService _authService;
   final HistoryService _historyService;
+  final ProfileService _profileService;
 
   SettingsCubit({
     AppUserService? appUserService,
     AuthService? authService,
     HistoryService? historyService,
+    ProfileService? profileService,
   })  : _appUserService = appUserService ?? AppUserService(),
         _authService = authService ?? AuthService(),
         _historyService = historyService ?? HistoryService(),
+        _profileService = profileService ?? ProfileService(),
         super(const SettingsState());
 
   /// Initialize settings - load user and package info
@@ -26,7 +30,18 @@ class SettingsCubit extends Cubit<SettingsState> {
     await Future.wait([
       _loadAppUser(),
       _loadPackageInfo(),
+      _loadActiveProfile(),
     ]);
+  }
+
+  Future<void> _loadActiveProfile() async {
+    try {
+      final activeProfile = await _profileService.getActiveProfile();
+      emit(state.copyWith(activeProfile: activeProfile, isLoadingProfile: false));
+    } catch (e) {
+      debugPrint('SettingsCubit._loadActiveProfile error: $e');
+      emit(state.copyWith(isLoadingProfile: false));
+    }
   }
 
   Future<void> _loadAppUser() async {
@@ -113,6 +128,42 @@ class SettingsCubit extends Cubit<SettingsState> {
   Future<void> refreshUser() async {
     emit(state.copyWith(isLoadingUser: true));
     await _loadAppUser();
+  }
+
+  Future<void> refreshProfile() async {
+    emit(state.copyWith(isLoadingProfile: true));
+    await _profileService.refresh();
+    await _loadActiveProfile();
+  }
+
+  Future<bool> updateCountry({required String countryCode, required String countryName}) async {
+    emit(state.copyWith(isUpdatingCountry: true, clearError: true));
+    try {
+      // Keep app-level region in sync (used for provider availability, etc.)
+      await _appUserService.updateRegion(region: countryCode);
+
+      final success = await _profileService.updateActiveProfileCountry(countryCode: countryCode, countryName: countryName);
+      if (!success) {
+        emit(state.copyWith(
+          isUpdatingCountry: false,
+          status: SettingsStatus.failure,
+          errorMessage: 'Failed to update country',
+        ));
+        return false;
+      }
+
+      await _loadActiveProfile();
+      emit(state.copyWith(isUpdatingCountry: false, status: SettingsStatus.success));
+      return true;
+    } catch (e) {
+      debugPrint('SettingsCubit.updateCountry error: $e');
+      emit(state.copyWith(
+        isUpdatingCountry: false,
+        status: SettingsStatus.failure,
+        errorMessage: 'Failed to update country',
+      ));
+      return false;
+    }
   }
 
   /// Clear any error messages

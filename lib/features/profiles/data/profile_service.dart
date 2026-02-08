@@ -342,6 +342,41 @@ class ProfileService extends ChangeNotifier {
     }
   }
 
+  Future<bool> updateActiveProfileCountry({required String countryCode, required String countryName}) async {
+    try {
+      if (!_initialized) await init();
+      final active = selectedProfile;
+      if (active == null) {
+        debugPrint('ProfileService.updateActiveProfileCountry: No active profile');
+        return false;
+      }
+
+      await SupabaseConfig.client
+          .from('profiles')
+          .update({
+            'country_code': countryCode,
+            'country_name': countryName,
+            'updated_at': DateTime.now().toUtc().toIso8601String(),
+          })
+          .eq('id', active.id);
+
+      final index = _profiles.indexWhere((p) => p.id == active.id);
+      if (index != -1) {
+        _profiles[index] = _profiles[index].copyWith(
+          countryCode: countryCode,
+          countryName: countryName,
+          updatedAt: DateTime.now(),
+        );
+      }
+
+      notifyListeners();
+      return true;
+    } catch (e) {
+      debugPrint('ProfileService.updateActiveProfileCountry error: $e');
+      return false;
+    }
+  }
+
   Future<void> deleteProfile(String id) async {
     try {
       await SupabaseConfig.client

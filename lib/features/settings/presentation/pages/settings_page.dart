@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:country_picker/country_picker.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:vibestream/core/routing/app_router.dart';
@@ -171,7 +172,7 @@ class _SettingsPageContent extends StatelessWidget {
   Future<void> _copyEmailToClipboard(BuildContext context) async {
     await Clipboard.setData(const ClipboardData(text: _contactEmail));
     if (context.mounted) {
-      Navigator.pop(context);
+      context.pop();
       SnackbarUtils.showSuccess(
         context,
         'Email address copied to clipboard',
@@ -184,7 +185,7 @@ class _SettingsPageContent extends StatelessWidget {
     final gmailUrl = Uri.parse(
       'https://mail.google.com/mail/?view=cm&fs=1&to=$_contactEmail&su=${Uri.encodeComponent(_emailSubject)}',
     );
-    Navigator.pop(context);
+    context.pop();
     await _launchUrlWithFallback(context, gmailUrl);
   }
 
@@ -192,8 +193,36 @@ class _SettingsPageContent extends StatelessWidget {
     final outlookUrl = Uri.parse(
       'https://outlook.live.com/mail/0/deeplink/compose?to=$_contactEmail&subject=${Uri.encodeComponent(_emailSubject)}',
     );
-    Navigator.pop(context);
+    context.pop();
     await _launchUrlWithFallback(context, outlookUrl);
+  }
+
+  void _showCountryPickerSheet(BuildContext context, SettingsState state) {
+    final selectedCode = state.activeProfile?.countryCode;
+    showCountryPicker(
+      context: context,
+      showPhoneCode: false,
+      countryListTheme: CountryListThemeData(
+        borderRadius: BorderRadius.circular(18),
+        inputDecoration: InputDecoration(
+          hintText: 'Search country',
+          prefixIcon: const Icon(Icons.search),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+        ),
+      ),
+      onSelect: (country) async {
+        if (state.isUpdatingCountry) return;
+        final ok = await context.read<SettingsCubit>().updateCountry(
+          countryCode: country.countryCode,
+          countryName: country.name,
+        );
+        if (!context.mounted) return;
+        if (ok) {
+          SnackbarUtils.showSuccess(context, 'Country updated to ${country.name}');
+        }
+      },
+      favorite: selectedCode == null ? const [] : [selectedCode],
+    );
   }
 
   Future<void> _launchUrlWithFallback(BuildContext context, Uri url) async {
@@ -281,6 +310,20 @@ class _SettingsPageContent extends StatelessWidget {
                             value: context.watch<ThemeCubit>().themeDisplayName,
                             isDark: isDark,
                             onTap: () => _showThemeSheet(context),
+                          ),
+                          _buildTileWithValue(
+                            context: context,
+                            icon: Icons.public,
+                            title: 'Country',
+                            value: state.isLoadingProfile
+                                ? 'Loading…'
+                                : (state.activeProfile?.countryName?.trim().isNotEmpty ?? false)
+                                    ? state.activeProfile!.countryName!
+                                    : 'Not set',
+                            isDark: isDark,
+                            onTap: state.isUpdatingCountry || state.isLoadingProfile
+                                ? () {}
+                                : () => _showCountryPickerSheet(context, state),
                           ),
                           _buildTileWithSwitch(
                             context: context,
@@ -714,7 +757,7 @@ class _SettingsPageContent extends StatelessWidget {
     return GestureDetector(
       onTap: () {
         context.read<ThemeCubit>().setTheme(mode);
-        Navigator.pop(context);
+        context.pop();
       },
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
@@ -764,12 +807,12 @@ class _SettingsPageContent extends StatelessWidget {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx),
+            onPressed: () => ctx.pop(),
             child: Text('Cancel', style: TextStyle(color: isDark ? const Color(0xFF808080) : const Color(0xFF808080))),
           ),
           TextButton(
             onPressed: () async {
-              Navigator.pop(ctx);
+              ctx.pop();
               await settingsCubit.signOut();
               if (context.mounted) {
                 context.go(AppRoutes.login);
@@ -841,7 +884,7 @@ class _SettingsPageContent extends StatelessWidget {
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx),
+            onPressed: () => ctx.pop(),
             child: Text(
               'Cancel',
               style: TextStyle(color: isDark ? const Color(0xFF808080) : const Color(0xFF808080)),
@@ -849,7 +892,7 @@ class _SettingsPageContent extends StatelessWidget {
           ),
           TextButton(
             onPressed: () async {
-              Navigator.pop(ctx);
+              ctx.pop();
               final success = await settingsCubit.clearHistory();
               if (context.mounted && success) {
                 SnackbarUtils.showSuccess(context, 'History cleared successfully');
