@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CLIENT_ID</key>
+	<string>333255258998-ghv2vtpoqb7unkdbiog828a1ksovkgnl.apps.googleusercontent.com</string>
+	<key>REVERSED_CLIENT_ID</key>
+	<string>com.googleusercontent.apps.333255258998-ghv2vtpoqb7unkdbiog828a1ksovkgnl</string>
+	<key>BUNDLE_ID</key>
+	<string>com.vsapps.discovery</string>
+	<key>PROJECT_ID</key>
+	<string>vibestream-project</string>
+	<key>GCM_SENDER_ID</key>
+	<string>333255258998</string>
+	<key>GOOGLE_APP_ID</key>
+	<string>1:333255258998:ios:placeholder</string>
+</dict>
+</plist>
