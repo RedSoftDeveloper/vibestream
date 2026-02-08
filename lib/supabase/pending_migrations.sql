@@ -84,3 +84,33 @@ BEGIN
 END $$;
 
 COMMENT ON COLUMN public.media_titles.watch_provider_link IS 'TMDB watch provider page link for this title';
+
+
+-- ====================================
+-- ONBOARDING: STORE COUNTRY ON PROFILES
+-- ====================================
+-- The onboarding flow collects the user's current country.
+-- We store it on the active profile for easy access across the app.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'profiles'
+      AND column_name = 'country_code'
+  ) THEN
+    ALTER TABLE public.profiles ADD COLUMN country_code TEXT;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'profiles'
+      AND column_name = 'country_name'
+  ) THEN
+    ALTER TABLE public.profiles ADD COLUMN country_name TEXT;
+  END IF;
+END $$;
+
+COMMENT ON COLUMN public.profiles.country_code IS 'ISO 3166-1 alpha-2 country code (e.g., SE, US, GB)';
+COMMENT ON COLUMN public.profiles.country_name IS 'Human-readable country name (e.g., Sweden, United States)';

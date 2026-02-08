@@ -66,6 +66,8 @@ CREATE TABLE public.profiles (
   emoji text,
   avatar_url text,
   description text,
+  country_code text,
+  country_name text,
   is_default boolean NOT NULL DEFAULT false,
   created_at timestamp with time zone NOT NULL DEFAULT now(),
   updated_at timestamp with time zone NOT NULL DEFAULT now(),
@@ -84,6 +86,8 @@ CREATE TABLE public.profiles (
 | `emoji` | text | Profile emoji avatar |
 | `avatar_url` | text | Profile image URL |
 | `description` | text | Profile description |
+| `country_code` | text | ISO 3166-1 alpha-2 country code (e.g., SE, US, GB) |
+| `country_name` | text | Human-readable country name |
 | `is_default` | boolean | Is this the default profile |
 | `created_at` | timestamptz | Creation timestamp |
 | `updated_at` | timestamptz | Last update timestamp |
