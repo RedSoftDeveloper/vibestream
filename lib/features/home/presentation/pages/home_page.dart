@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:vibestream/core/routing/app_router.dart';
+import 'package:vibestream/core/services/onboarding_funnel_tracker.dart';
 import 'package:vibestream/core/theme/app_theme.dart';
 import 'package:vibestream/core/utils/snackbar_utils.dart';
 import 'package:vibestream/features/profiles/data/profile_service.dart';
@@ -11,6 +12,7 @@ import 'package:vibestream/features/profiles/presentation/widgets/profile_dropdo
 import 'package:vibestream/features/recommendations/data/recommendation_service.dart';
 import 'package:vibestream/features/recommendations/data/interaction_service.dart';
 import 'package:vibestream/core/services/home_refresh_service.dart';
+import 'package:vibestream/core/services/analytics_service.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -39,6 +41,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _trackHomeEntered();
     WidgetsBinding.instance.addObserver(this);
     
     // Check cache SYNCHRONOUSLY before first build to avoid shimmer flash
@@ -48,6 +51,25 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _profileService.addListener(_onProfilesChanged);
     _homeRefreshService.addListener(_onRefreshRequested);
     RecommendationService.addHomeDataListener(_onHomeDataCacheInvalidated);
+  }
+
+  void _trackHomeEntered() {
+    if (!AnalyticsService.isInitialized) return;
+
+    final flowId = OnboardingFunnelTracker.flowId;
+    AnalyticsService.instance.track('home_entered', properties: {
+      'source': flowId != null ? 'onboarding' : 'navigation',
+      if (flowId != null) 'onboarding_flow_id': flowId,
+    });
+
+    // We consider the onboarding funnel “closed” once Home is reached.
+    if (flowId != null) {
+      AnalyticsService.instance.track('onboarding_home_reached', properties: {
+        'funnel': OnboardingFunnelTracker.funnelName,
+        'onboarding_flow_id': flowId,
+      });
+      OnboardingFunnelTracker.reset();
+    }
   }
   
   /// Synchronously check cache before the first build to avoid shimmer flash

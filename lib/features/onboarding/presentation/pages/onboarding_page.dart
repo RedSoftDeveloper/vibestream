@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:country_picker/country_picker.dart';
 import 'package:go_router/go_router.dart';
 import 'package:vibestream/core/routing/app_router.dart';
+import 'package:vibestream/core/services/onboarding_funnel_tracker.dart';
 import 'package:vibestream/core/theme/app_theme.dart';
 import 'package:vibestream/core/utils/snackbar_utils.dart';
 import 'package:vibestream/features/auth/data/app_user_service.dart';
@@ -81,8 +82,42 @@ class _OnboardingPageState extends State<OnboardingPage> {
   @override
   void initState() {
     super.initState();
+    _trackOnboardingStart();
     _initProfile();
   }
+
+  @override
+  void dispose() {
+    super.dispose();
+  }
+
+  static String _stepNameForIndex(int index) {
+    switch (index) {
+      case 0:
+        return 'explain_magic';
+      case 1:
+        return 'country_selection';
+      case 2:
+        return 'taste_preferences';
+      default:
+        return 'unknown';
+    }
+  }
+
+  void _trackOnboardingStart() {
+    // Funnel should fire every time we are routed to onboarding.
+    OnboardingFunnelTracker.start(
+      stepIndex: _currentPage,
+      totalSteps: _totalPages,
+      stepName: _stepNameForIndex(_currentPage),
+    );
+  }
+
+  void _trackStepViewed(int stepIndex) => OnboardingFunnelTracker.stepViewed(
+    stepIndex: stepIndex,
+    totalSteps: _totalPages,
+    stepName: _stepNameForIndex(stepIndex),
+  );
 
   Future<void> _initProfile() async {
     try {
@@ -199,6 +234,11 @@ class _OnboardingPageState extends State<OnboardingPage> {
         throw Exception('Failed to save preferences');
       }
       if (!mounted) return;
+      OnboardingFunnelTracker.completed(
+        stepIndex: _currentPage,
+        totalSteps: _totalPages,
+        stepName: _stepNameForIndex(_currentPage),
+      );
       context.go(AppRoutes.home);
     } catch (e) {
       debugPrint('OnboardingPage: Error saving preferences: $e');
@@ -309,28 +349,60 @@ class _OnboardingPageState extends State<OnboardingPage> {
 
   void _nextPage() {
     if (_currentPage == 1 && _selectedCountry == null) {
+      OnboardingFunnelTracker.blocked(
+        reason: 'country_required',
+        stepIndex: _currentPage,
+        totalSteps: _totalPages,
+        stepName: _stepNameForIndex(_currentPage),
+      );
       SnackbarUtils.showError(context, 'Please select your country to continue.');
       return;
     }
 
     if (_currentPage < _totalPages - 1) {
+      OnboardingFunnelTracker.action(
+        actionName: 'next',
+        stepIndex: _currentPage,
+        totalSteps: _totalPages,
+        stepName: _stepNameForIndex(_currentPage),
+      );
       setState(() => _currentPage++);
+      _trackStepViewed(_currentPage);
       return;
     }
 
     // Last page (taste preferences) completes onboarding.
+    OnboardingFunnelTracker.action(
+      actionName: 'finish',
+      stepIndex: _currentPage,
+      totalSteps: _totalPages,
+      stepName: _stepNameForIndex(_currentPage),
+    );
     _savePreferencesAndCompleteOnboarding();
   }
 
   void _previousPage() {
     if (_currentPage > 0) {
+      OnboardingFunnelTracker.action(
+        actionName: 'back',
+        stepIndex: _currentPage,
+        totalSteps: _totalPages,
+        stepName: _stepNameForIndex(_currentPage),
+      );
       setState(() => _currentPage--);
+      _trackStepViewed(_currentPage);
     } else {
       context.pop();
     }
   }
 
   void _skip() async {
+    OnboardingFunnelTracker.action(
+      actionName: 'skip_tap',
+      stepIndex: _currentPage,
+      totalSteps: _totalPages,
+      stepName: _stepNameForIndex(_currentPage),
+    );
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final shouldSkip = await showDialog<bool>(
       context: context,
@@ -376,6 +448,11 @@ class _OnboardingPageState extends State<OnboardingPage> {
     );
     
     if (shouldSkip == true && mounted) {
+      OnboardingFunnelTracker.skipped(
+        stepIndex: _currentPage,
+        totalSteps: _totalPages,
+        stepName: _stepNameForIndex(_currentPage),
+      );
       // Treat skip as onboarding complete so relaunch lands on Home.
       if (_activeProfileId == null) {
         debugPrint('OnboardingPage: Skip pressed before profile ready; navigating to home');
