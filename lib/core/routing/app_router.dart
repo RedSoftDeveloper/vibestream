@@ -25,6 +25,7 @@ import 'package:vibestream/features/recommendations/presentation/pages/recommend
 import 'package:vibestream/features/recommendations/domain/entities/recommendation_card.dart';
 import 'package:vibestream/features/recommendations/data/interaction_service.dart';
 import 'package:vibestream/features/home/presentation/pages/all_recent_vibes_page.dart';
+import 'package:vibestream/core/routing/analytics_route_observer.dart';
 
 class AppRoutes {
   static const String splash = '/';
@@ -78,6 +79,7 @@ final _shellNavigatorKey = GlobalKey<NavigatorState>();
 final appRouter = GoRouter(
   navigatorKey: _rootNavigatorKey,
   initialLocation: AppRoutes.splash,
+  observers: [AnalyticsRouteObserver()],
   routes: [
     GoRoute(
       path: AppRoutes.splash,

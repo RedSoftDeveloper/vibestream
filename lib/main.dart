@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:vibestream/core/routing/app_router.dart';
+import 'package:vibestream/core/services/analytics_service.dart';
 import 'package:vibestream/core/theme/app_theme.dart';
 import 'package:vibestream/core/theme/theme_cubit.dart';
 import 'package:vibestream/supabase/supabase_config.dart';
@@ -17,6 +18,9 @@ void main() async {
   
   // Initialize Supabase
   await SupabaseConfig.initialize();
+
+  // Initialize analytics (Mixpanel). Safe to fail.
+  await AnalyticsService.initialize();
   
   runApp(const VibeStreamApp());
 }
