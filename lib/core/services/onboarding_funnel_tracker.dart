@@ -23,8 +23,14 @@ class OnboardingFunnelTracker {
 
   static String _newFlowId() {
     final ts = DateTime.now().microsecondsSinceEpoch;
-    final rand = Random().nextInt(1 << 32);
-    return 'ob_${ts}_${rand.toRadixString(16)}';
+    // IMPORTANT (web): Avoid `Random().nextInt(1 << 32)`.
+    // Depending on JS bit-ops lowering, `1 << 32` can become 0, which triggers:
+    // RangeError: max must be in range 0 < max <= 2^32, was 0
+    final random = Random();
+    final hi = random.nextInt(1 << 16);
+    final lo = random.nextInt(1 << 16);
+    final rand32 = (hi << 16) | lo;
+    return 'ob_${ts}_${rand32.toRadixString(16)}';
   }
 
   static Map<String, dynamic> _baseProps({int? stepIndex, String? stepName}) {
