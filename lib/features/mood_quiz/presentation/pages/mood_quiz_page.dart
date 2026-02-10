@@ -94,36 +94,19 @@ class _MoodQuizPageState extends State<MoodQuizPage> {
       return;
     }
 
-    setState(() => _isLoading = true);
-
-    try {
-      final session = await RecommendationService.createMoodSession(
-        profileId: profileId,
-        viewingStyle: _viewingStyleKey,
-        sliders: _slidersForApi,
-        selectedGenres: _selectedGenres.toList(),
-        freeText: _moodController.text.trim(),
-      );
-
-      if (mounted) {
-        // Request home page refresh after quiz completion
-        HomeRefreshService().requestRefresh(reason: HomeRefreshReason.moodQuizCompleted);
-        
-        context.push(AppRoutes.recommendations, extra: {
-          'session': session,
-          'source': InteractionSource.moodResults,
-        });
-      }
-    } catch (e) {
-      debugPrint('MoodQuiz error: $e');
-      if (mounted) {
-        SnackbarUtils.showError(context, 'Failed to get recommendations. Please try again.');
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
-    }
+    // Navigate immediately with streaming parameters
+    // The recommendations page will handle streaming and show shimmer loading
+    HomeRefreshService().requestRefresh(reason: HomeRefreshReason.moodQuizCompleted);
+    
+    context.push(AppRoutes.recommendations, extra: {
+      'source': InteractionSource.moodResults,
+      'profileId': profileId,
+      'viewingStyle': _viewingStyleKey,
+      'sliders': _slidersForApi,
+      'selectedGenres': _selectedGenres.toList(),
+      'freeText': _moodController.text.trim(),
+      'contentTypes': ['movie', 'tv'],
+    });
   }
 
   @override

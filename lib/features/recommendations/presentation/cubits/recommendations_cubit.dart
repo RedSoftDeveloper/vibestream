@@ -1,13 +1,16 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:vibestream/features/recommendations/presentation/cubits/recommendations_state.dart';
 import 'package:vibestream/features/recommendations/domain/entities/recommendation_card.dart';
 import 'package:vibestream/features/recommendations/data/interaction_service.dart';
+import 'package:vibestream/features/recommendations/data/recommendation_service.dart';
 import 'package:vibestream/core/services/home_refresh_service.dart';
 
 class RecommendationsCubit extends Cubit<RecommendationsState> {
   final InteractionService _interactionService;
   final HomeRefreshService _homeRefreshService;
+  StreamSubscription<StreamingRecommendationEvent>? _streamSubscription;
 
   RecommendationsCubit({
     InteractionService? interactionService,
@@ -16,6 +19,13 @@ class RecommendationsCubit extends Cubit<RecommendationsState> {
         _homeRefreshService = homeRefreshService ?? HomeRefreshService(),
         super(const RecommendationsState());
 
+  @override
+  Future<void> close() {
+    _streamSubscription?.cancel();
+    return super.close();
+  }
+
+  /// Initialize with a pre-loaded session (non-streaming)
   void initialize(RecommendationSession session, InteractionSource source) {
     emit(state.copyWith(
       status: RecommendationsStatus.swiping,
@@ -24,7 +34,139 @@ class RecommendationsCubit extends Cubit<RecommendationsState> {
       currentCardIndex: 0,
       swipeOffset: 0,
       swipeRotation: 0,
+      totalExpectedCards: session.cards.length,
+      receivedCardsCount: session.cards.length,
+      clearError: true,
     ));
+  }
+
+  /// Start a streaming mood session
+  void startMoodSessionStreaming({
+    required String profileId,
+    required String viewingStyle,
+    required Map<String, double> sliders,
+    required List<String> selectedGenres,
+    String? freeText,
+    List<String> contentTypes = const ['movie', 'tv'],
+    InteractionSource source = InteractionSource.moodResults,
+  }) {
+    _startStreaming(
+      stream: RecommendationService.createMoodSessionStreaming(
+        profileId: profileId,
+        viewingStyle: viewingStyle,
+        sliders: sliders,
+        selectedGenres: selectedGenres,
+        freeText: freeText,
+        contentTypes: contentTypes,
+      ),
+      source: source,
+    );
+  }
+
+  /// Start a streaming quick match session
+  void startQuickMatchSessionStreaming({
+    required String profileId,
+    required String quickMatchTag,
+    String viewingStyle = 'personal',
+    List<String> contentTypes = const ['movie', 'tv'],
+    InteractionSource source = InteractionSource.quickMatch,
+  }) {
+    _startStreaming(
+      stream: RecommendationService.createQuickMatchSessionStreaming(
+        profileId: profileId,
+        quickMatchTag: quickMatchTag,
+        viewingStyle: viewingStyle,
+        contentTypes: contentTypes,
+      ),
+      source: source,
+    );
+  }
+
+  void _startStreaming({
+    required Stream<StreamingRecommendationEvent> stream,
+    required InteractionSource source,
+  }) {
+    // Cancel any existing stream
+    _streamSubscription?.cancel();
+
+    // Reset state for streaming
+    emit(RecommendationsState(
+      status: RecommendationsStatus.streaming,
+      source: source,
+      totalExpectedCards: 5, // Default, will be updated when session starts
+      receivedCardsCount: 0,
+    ));
+
+    _streamSubscription = stream.listen(
+      _handleStreamEvent,
+      onError: (error) {
+        debugPrint('RecommendationsCubit: Stream error: $error');
+        emit(state.copyWith(
+          streamingError: error.toString(),
+        ));
+      },
+      onDone: () {
+        debugPrint('RecommendationsCubit: Stream completed');
+      },
+    );
+  }
+
+  void _handleStreamEvent(StreamingRecommendationEvent event) {
+    if (isClosed) return;
+
+    switch (event) {
+      case StreamingSessionStarted():
+        debugPrint('RecommendationsCubit: Session started - ${event.sessionId}');
+        // Create initial session shell
+        final session = RecommendationSession(
+          id: event.sessionId,
+          profileId: event.profileId,
+          sessionType: event.sessionType,
+          moodInput: {},
+          cards: [],
+          createdAt: event.createdAt,
+          totalExpectedCards: event.totalExpectedCards,
+          isComplete: false,
+        );
+        emit(state.copyWith(
+          session: session,
+          totalExpectedCards: event.totalExpectedCards,
+          receivedCardsCount: 0,
+        ));
+        
+      case StreamingCardReceived():
+        debugPrint('RecommendationsCubit: Card received - ${event.card.title}');
+        if (state.session != null) {
+          final updatedCards = [...state.session!.cards, event.card];
+          final updatedSession = state.session!.copyWith(
+            cards: updatedCards,
+            isComplete: false,
+          );
+          emit(state.copyWith(
+            session: updatedSession,
+            receivedCardsCount: updatedCards.length,
+          ));
+        }
+        
+      case StreamingCompleted():
+        debugPrint('RecommendationsCubit: Streaming completed with ${event.session.cards.length} cards');
+        emit(state.copyWith(
+          status: RecommendationsStatus.swiping,
+          session: event.session,
+          totalExpectedCards: event.session.cards.length,
+          receivedCardsCount: event.session.cards.length,
+        ));
+        
+      case StreamingError():
+        debugPrint('RecommendationsCubit: Streaming error - ${event.message}');
+        emit(state.copyWith(
+          streamingError: event.message,
+        ));
+    }
+  }
+
+  void clearError() {
+    emit(state.copyWith(clearError: true));
   }
 
   void onDragUpdate(double deltaX) {

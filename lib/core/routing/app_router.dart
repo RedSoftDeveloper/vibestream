@@ -268,11 +268,31 @@ final appRouter = GoRouter(
       name: 'recommendations',
       pageBuilder: (context, state) {
         final extra = state.extra as Map<String, dynamic>? ?? {};
-        final session = extra['session'] as RecommendationSession;
+        final session = extra['session'] as RecommendationSession?;
         final source = extra['source'] as InteractionSource? ?? InteractionSource.moodResults;
+        
+        // Streaming parameters (used when session is null)
+        final profileId = extra['profileId'] as String?;
+        final viewingStyle = extra['viewingStyle'] as String?;
+        final sliders = extra['sliders'] as Map<String, double>?;
+        final selectedGenres = extra['selectedGenres'] as List<String>?;
+        final freeText = extra['freeText'] as String?;
+        final contentTypes = extra['contentTypes'] as List<String>?;
+        final quickMatchTag = extra['quickMatchTag'] as String?;
+        
         return NoTransitionPage(
           key: state.pageKey,
-          child: RecommendationResultsPage(session: session, source: source),
+          child: RecommendationResultsPage(
+            session: session,
+            source: source,
+            profileId: profileId,
+            viewingStyle: viewingStyle,
+            sliders: sliders,
+            selectedGenres: selectedGenres,
+            freeText: freeText,
+            contentTypes: contentTypes,
+            quickMatchTag: quickMatchTag,
+          ),
         );
       },
     ),

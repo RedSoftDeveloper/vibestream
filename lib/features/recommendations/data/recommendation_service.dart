@@ -1,4 +1,7 @@
+import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 import 'package:vibestream/supabase/supabase_config.dart';
 import 'package:vibestream/features/recommendations/domain/entities/recommendation_card.dart';
 
@@ -445,6 +448,231 @@ class RecommendationService {
     }
   }
 
+
+  /// Creates a recommendation session with streaming support
+  /// Returns a Stream of [StreamingRecommendationEvent] that emits:
+  /// 1. [StreamingSessionStarted] - When session is created with metadata
+  /// 2. [StreamingCardReceived] - For each card as it becomes available
+  /// 3. [StreamingCompleted] - When all cards are received with final session
+  /// 4. [StreamingError] - If an error occurs
+  static Stream<StreamingRecommendationEvent> createSessionStreaming({
+    required String sessionType,
+    required String profileId,
+    required Map<String, dynamic> moodInput,
+    List<String> contentTypes = const ['movie', 'tv'],
+  }) async* {
+    try {
+      // Verify authentication
+      final session = SupabaseConfig.auth.currentSession;
+      if (session == null) {
+        debugPrint('RecommendationService: No active session, attempting refresh...');
+        try {
+          await SupabaseConfig.auth.refreshSession();
+        } catch (refreshError) {
+          debugPrint('RecommendationService: Refresh failed: $refreshError');
+          yield StreamingError(message: 'User not authenticated. Please log in again.');
+          return;
+        }
+      }
+
+      final currentSession = SupabaseConfig.auth.currentSession;
+      if (currentSession == null) {
+        yield StreamingError(message: 'User not authenticated. Please log in again.');
+        return;
+      }
+
+      final accessToken = currentSession.accessToken;
+      final functionUrl = '${SupabaseConfig.supabaseUrl}/functions/v1/create_recommendation_session';
+
+      debugPrint('RecommendationService: Starting streaming request to $functionUrl');
+
+      final request = http.Request('POST', Uri.parse(functionUrl));
+      request.headers.addAll({
+        'Authorization': 'Bearer $accessToken',
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+        'apikey': SupabaseConfig.anonKey,
+      });
+      request.body = jsonEncode({
+        'session_type': sessionType,
+        'profile_id': profileId,
+        'mood_input': moodInput,
+        'content_types': contentTypes,
+        'stream': true,
+      });
+
+      final client = http.Client();
+      final streamedResponse = await client.send(request);
+
+      if (streamedResponse.statusCode != 200) {
+        final responseBody = await streamedResponse.stream.bytesToString();
+        debugPrint('RecommendationService: Stream error ${streamedResponse.statusCode}: $responseBody');
+        yield StreamingError(message: 'Failed to start recommendation stream: ${streamedResponse.statusCode}');
+        client.close();
+        return;
+      }
+
+      String? sessionId;
+      String receivedProfileId = profileId;
+      String receivedSessionType = sessionType;
+      int totalExpectedCards = 5;
+      DateTime createdAt = DateTime.now();
+      final List<RecommendationCard> cards = [];
+      String buffer = '';
+
+      await for (final chunk in streamedResponse.stream.transform(utf8.decoder)) {
+        buffer += chunk;
+        
+        // Process complete lines from buffer
+        while (buffer.contains('\n')) {
+          final lineEnd = buffer.indexOf('\n');
+          final line = buffer.substring(0, lineEnd).trim();
+          buffer = buffer.substring(lineEnd + 1);
+          
+          if (line.isEmpty) continue;
+          
+          // Handle SSE format: "data: {...}" or "event: type"
+          String jsonData = line;
+          if (line.startsWith('data:')) {
+            jsonData = line.substring(5).trim();
+          } else if (line.startsWith('event:')) {
+            continue; // Skip event type lines
+          }
+          
+          if (jsonData.isEmpty || jsonData == '[DONE]') continue;
+          
+          try {
+            final data = jsonDecode(jsonData) as Map<String, dynamic>;
+            final eventType = data['type'] as String? ?? data['event'] as String?;
+            
+            if (eventType == 'session_started' || data.containsKey('session_id') && !data.containsKey('card')) {
+              // Session started event
+              sessionId = data['session_id'] as String? ?? data['id'] as String?;
+              receivedProfileId = data['profile_id'] as String? ?? profileId;
+              receivedSessionType = data['session_type'] as String? ?? sessionType;
+              totalExpectedCards = data['total_expected'] as int? ?? 5;
+              if (data['created_at'] != null) {
+                createdAt = DateTime.parse(data['created_at'] as String);
+              }
+              
+              debugPrint('RecommendationService: Session started - $sessionId, expecting $totalExpectedCards cards');
+              
+              yield StreamingSessionStarted(
+                sessionId: sessionId ?? '',
+                profileId: receivedProfileId,
+                sessionType: receivedSessionType,
+                totalExpectedCards: totalExpectedCards,
+                createdAt: createdAt,
+              );
+            } else if (eventType == 'card' || data.containsKey('card')) {
+              // Card received event
+              final cardData = data['card'] as Map<String, dynamic>? ?? data;
+              final cardIndex = data['index'] as int? ?? cards.length;
+              
+              final card = RecommendationCard.fromJson(cardData);
+              cards.add(card);
+              
+              // Mark title as seen
+              markTitleAsSeen(profileId, card.titleId);
+              
+              debugPrint('RecommendationService: Card received - ${card.title} (${cardIndex + 1}/$totalExpectedCards)');
+              
+              yield StreamingCardReceived(card: card, cardIndex: cardIndex);
+            } else if (eventType == 'complete' || eventType == 'done' || data.containsKey('cards')) {
+              // Completion event - might include all cards in final payload
+              if (data.containsKey('cards') && cards.isEmpty) {
+                final cardsJson = data['cards'] as List<dynamic>? ?? [];
+                for (int i = 0; i < cardsJson.length; i++) {
+                  final card = RecommendationCard.fromJson(cardsJson[i] as Map<String, dynamic>);
+                  cards.add(card);
+                  markTitleAsSeen(profileId, card.titleId);
+                  yield StreamingCardReceived(card: card, cardIndex: i);
+                }
+              }
+              
+              sessionId ??= data['id'] as String? ?? data['session_id'] as String?;
+              if (data['created_at'] != null && createdAt == DateTime.now()) {
+                createdAt = DateTime.parse(data['created_at'] as String);
+              }
+            } else if (eventType == 'error') {
+              yield StreamingError(message: data['message'] as String? ?? 'Unknown streaming error');
+              client.close();
+              return;
+            }
+          } catch (e) {
+            debugPrint('RecommendationService: Error parsing stream data: $e - Line: $jsonData');
+            // Continue processing other events
+          }
+        }
+      }
+      
+      client.close();
+      
+      // Create final session
+      final finalSession = RecommendationSession(
+        id: sessionId ?? '',
+        profileId: receivedProfileId,
+        sessionType: receivedSessionType,
+        moodInput: moodInput,
+        cards: cards,
+        createdAt: createdAt,
+        totalExpectedCards: totalExpectedCards,
+        isComplete: true,
+      );
+      
+      // Invalidate caches since we have a new session
+      invalidateLatestRecommendationCache();
+      invalidateHomeDataCache();
+      
+      debugPrint('RecommendationService: Streaming complete with ${cards.length} cards');
+      
+      yield StreamingCompleted(session: finalSession);
+    } catch (e) {
+      debugPrint('RecommendationService.createSessionStreaming error: $e');
+      yield StreamingError(message: e.toString());
+    }
+  }
+
+  /// Creates a mood-based session with streaming
+  static Stream<StreamingRecommendationEvent> createMoodSessionStreaming({
+    required String profileId,
+    required String viewingStyle,
+    required Map<String, double> sliders,
+    required List<String> selectedGenres,
+    String? freeText,
+    List<String> contentTypes = const ['movie', 'tv'],
+  }) {
+    return createSessionStreaming(
+      sessionType: 'mood',
+      profileId: profileId,
+      moodInput: {
+        'viewing_style': viewingStyle,
+        'sliders': sliders,
+        'selected_genres': selectedGenres,
+        'quick_match_tag': null,
+        'free_text': freeText ?? '',
+      },
+      contentTypes: contentTypes,
+    );
+  }
+
+  /// Creates a quick match session with streaming
+  static Stream<StreamingRecommendationEvent> createQuickMatchSessionStreaming({
+    required String profileId,
+    required String quickMatchTag,
+    String viewingStyle = 'personal',
+    List<String> contentTypes = const ['movie', 'tv'],
+  }) {
+    return createSessionStreaming(
+      sessionType: 'quick_match',
+      profileId: profileId,
+      moodInput: {
+        'quick_match_tag': quickMatchTag,
+        'viewing_style': viewingStyle,
+      },
+      contentTypes: contentTypes,
+    );
+  }
 
   /// Creates an onboarding session
   static Future<RecommendationSession> createOnboardingSession({

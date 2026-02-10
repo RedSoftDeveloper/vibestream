@@ -78,6 +78,8 @@ class RecommendationSession {
   final Map<String, dynamic> moodInput;
   final List<RecommendationCard> cards;
   final DateTime createdAt;
+  final int totalExpectedCards;
+  final bool isComplete;
 
   RecommendationSession({
     required this.id,
@@ -86,6 +88,8 @@ class RecommendationSession {
     required this.moodInput,
     required this.cards,
     required this.createdAt,
+    this.totalExpectedCards = 5,
+    this.isComplete = true,
   });
 
   factory RecommendationSession.fromJson(Map<String, dynamic> json) {
@@ -99,6 +103,75 @@ class RecommendationSession {
       createdAt: json['created_at'] != null 
           ? DateTime.parse(json['created_at'] as String) 
           : DateTime.now(),
+      totalExpectedCards: json['total_expected'] as int? ?? 5,
+      isComplete: json['is_complete'] as bool? ?? true,
     );
   }
+
+  RecommendationSession copyWith({
+    String? id,
+    String? profileId,
+    String? sessionType,
+    Map<String, dynamic>? moodInput,
+    List<RecommendationCard>? cards,
+    DateTime? createdAt,
+    int? totalExpectedCards,
+    bool? isComplete,
+  }) {
+    return RecommendationSession(
+      id: id ?? this.id,
+      profileId: profileId ?? this.profileId,
+      sessionType: sessionType ?? this.sessionType,
+      moodInput: moodInput ?? this.moodInput,
+      cards: cards ?? this.cards,
+      createdAt: createdAt ?? this.createdAt,
+      totalExpectedCards: totalExpectedCards ?? this.totalExpectedCards,
+      isComplete: isComplete ?? this.isComplete,
+    );
+  }
+}
+
+/// Represents a streaming event from the recommendation service
+sealed class StreamingRecommendationEvent {}
+
+/// Session metadata received at the start of streaming
+class StreamingSessionStarted extends StreamingRecommendationEvent {
+  final String sessionId;
+  final String profileId;
+  final String sessionType;
+  final int totalExpectedCards;
+  final DateTime createdAt;
+
+  StreamingSessionStarted({
+    required this.sessionId,
+    required this.profileId,
+    required this.sessionType,
+    required this.totalExpectedCards,
+    required this.createdAt,
+  });
+}
+
+/// A new card arrived during streaming
+class StreamingCardReceived extends StreamingRecommendationEvent {
+  final RecommendationCard card;
+  final int cardIndex;
+
+  StreamingCardReceived({
+    required this.card,
+    required this.cardIndex,
+  });
+}
+
+/// Streaming completed successfully
+class StreamingCompleted extends StreamingRecommendationEvent {
+  final RecommendationSession session;
+
+  StreamingCompleted({required this.session});
+}
+
+/// Streaming encountered an error
+class StreamingError extends StreamingRecommendationEvent {
+  final String message;
+
+  StreamingError({required this.message});
 }
