@@ -15,9 +15,16 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, accept",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Max-Age": "86400",
+};
+
+const SSE_HEADERS = {
+  ...CORS_HEADERS,
+  "Content-Type": "text/event-stream",
+  "Cache-Control": "no-cache",
+  "Connection": "keep-alive",
 };
 
 const HISTORY_WINDOW_DAYS = 120;
@@ -161,6 +168,7 @@ const RequestBodySchema = z.object({
   session_type: z.enum(["onboarding", "mood", "quick_match"]),
   mood_input: z.record(z.any()).optional().default({}),
   content_types: z.array(z.enum(["movie", "tv"])).optional(),
+  stream: z.boolean().optional().default(false),
 });
 
 type RequestBody = z.infer<typeof RequestBodySchema>;
@@ -700,6 +708,94 @@ async function processCandidatesParallel(
   return enrichResults.filter((r) => r !== null) as Array<{ item: OpenAIItem; mediaRow: MediaTitle; watchProviders: WatchProvidersResult }>;
 }
 
+// Sequential processing for streaming - processes one candidate at a time
+async function processCandidatesSequential(
+  ctx: LogContext,
+  items: OpenAIItem[],
+  supabaseAdmin: any,
+  contentTypes: TmdbType[],
+  excludedNormalizedTitles: Set<string>,
+  excludedTmdbKeys: Set<string>,
+  chosenNorm: Set<string>,
+  userRegion: string,
+  maxChoose: number,
+  onCardReady?: (card: { item: OpenAIItem; mediaRow: MediaTitle; watchProviders: WatchProvidersResult }, index: number) => void,
+): Promise<Array<{ item: OpenAIItem; mediaRow: MediaTitle; watchProviders: WatchProvidersResult }>> {
+  const chosen: Array<{ item: OpenAIItem; mediaRow: MediaTitle; watchProviders: WatchProvidersResult }> = [];
+  let processedCount = 0;
+
+  for (const it of items) {
+    if (chosen.length >= maxChoose) break;
+    
+    const title = String(it?.title || "").trim();
+    if (!title) continue;
+    
+    const norm = normalizeTitle(title);
+    if (chosenNorm.has(norm) || excludedNormalizedTitles.has(norm)) continue;
+
+    const tmdbTypeRaw = String(it?.tmdb_type || "").toLowerCase().trim();
+    const tmdbType: TmdbType | null = tmdbTypeRaw === "movie" || tmdbTypeRaw === "tv" ? (tmdbTypeRaw as TmdbType) : null;
+    const typeToUse: TmdbType | null = tmdbType && contentTypes.includes(tmdbType) ? tmdbType : null;
+    if (!typeToUse) continue;
+
+    const searchQuery = String(it?.tmdb_search_query || it?.title || "").trim();
+    const hit = await tmdbSearchOne(ctx, searchQuery, typeToUse);
+    if (!hit) continue;
+
+    const tmdbKey = `${hit.tmdb_type}:${hit.tmdb_id}`;
+    if (excludedTmdbKeys.has(tmdbKey)) continue;
+
+    const { mediaTitle, watchProviders } = await getOrCreateMediaTitle(ctx, supabaseAdmin, hit.tmdb_id, hit.tmdb_type, it.title, userRegion);
+    if (!mediaTitle) continue;
+
+    excludedNormalizedTitles.add(norm);
+    excludedTmdbKeys.add(tmdbKey);
+    chosenNorm.add(norm);
+
+    const result = { item: it, mediaRow: mediaTitle, watchProviders };
+    chosen.push(result);
+
+    // Notify callback that a card is ready
+    if (onCardReady) {
+      onCardReady(result, chosen.length - 1);
+    }
+
+    processedCount++;
+  }
+
+  return chosen;
+}
+
+function buildRecommendationCard(
+  chosen: { item: OpenAIItem; mediaRow: MediaTitle; watchProviders: WatchProvidersResult },
+): RecommendationCard {
+  const t = chosen.mediaRow;
+  let duration = "";
+  if (t.runtime_minutes) {
+    const hours = Math.floor(t.runtime_minutes / 60);
+    const mins = t.runtime_minutes % 60;
+    duration = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
+  }
+  return {
+    title_id: t.id,
+    title: t.title,
+    year: t.year?.toString() ?? "",
+    duration,
+    genres: t.genres ?? [],
+    rating: t.imdb_rating?.toString() ?? "",
+    age_rating: t.age_rating ?? "",
+    quote: chosen.item?.reason ?? "",
+    description: t.overview ?? "",
+    poster_url: t.poster_url,
+    match_score: chosen.item?.match_score ?? null,
+    tmdb_type: t.tmdb_type,
+    director: t.director ?? "",
+    starring: t.starring ?? [],
+    watch_provider_link: chosen.watchProviders.link,
+    watch_providers: chosen.watchProviders.providers,
+  };
+}
+
 serve(async (req: Request) => {
   const reqId = crypto.randomUUID();
   const ctx: LogContext = { reqId };
@@ -735,8 +831,9 @@ serve(async (req: Request) => {
     const session_type = body.session_type as SessionType;
     const mood_input = body.mood_input;
     const content_types = parseContentTypes(body);
+    const shouldStream = body.stream === true;
 
-    log(ctx, "Incoming request", { profile_id: body.profile_id, session_type, content_types });
+    log(ctx, "Incoming request", { profile_id: body.profile_id, session_type, content_types, stream: shouldStream });
 
     const windowStart = daysAgoIso(HISTORY_WINDOW_DAYS);
     const [profileResult, prefsResult, interactionsResult, userRegion] = await Promise.all([
@@ -888,11 +985,215 @@ serve(async (req: Request) => {
     const negativeSignals = { genres: negativeGenres, notes: negativeNotesTop, tags: negativeTags, titles: negativeTitlesForPrompt };
     const chosenNorm = new Set<string>();
 
+    // Get OpenAI candidates
     const payload1 = await callOpenAI(ctx, promptObj, CANDIDATES_COUNT, content_types, Array.from(new Set(hardExcludedTitlesForPrompt)), Array.from(new Set(softExcludedTitlesForPrompt)), positiveSignals, negativeSignals);
-    let chosen = await processCandidatesParallel(ctx, payload1.items, supabaseAdmin, content_types, excludedNormalizedTitles, excludedTmdbKeys, chosenNorm, userRegion, FINAL_COUNT);
-
+    
     let finalMoodLabel = payload1.mood_label ?? "";
     let finalMoodTags = Array.isArray(payload1.mood_tags) ? payload1.mood_tags : [];
+
+    // STREAMING MODE
+    if (shouldStream) {
+      log(ctx, "Starting streaming mode");
+      
+      // Create session first (without cards)
+      const { data: session, error: sessionErr } = await supabaseAdmin
+        .from("recommendation_sessions")
+        .insert({
+          profile_id: body.profile_id,
+          session_type,
+          input_payload: { ...(mood_input as any), content_types },
+          openai_response: {
+            mood_label: finalMoodLabel,
+            mood_tags: finalMoodTags,
+            content_types,
+            feedback_signals_used: {
+              user_tends_to_enjoy_genres: positiveGenres,
+              user_tends_to_avoid_genres: negativeGenres,
+              user_tends_to_enjoy_tags: positiveTags,
+              user_tends_to_avoid_tags: negativeTags,
+              recent_feedback_notes_positive: positiveNotesTop,
+              recent_feedback_notes_negative: negativeNotesTop,
+            },
+            candidates_payload: payload1,
+          },
+          mood_label: finalMoodLabel,
+          mood_tags: finalMoodTags,
+          top_title_id: null,
+          created_at: nowIso(),
+        })
+        .select()
+        .single();
+
+      if (sessionErr || !session) {
+        log(ctx, "Failed to insert recommendation_sessions", sessionErr);
+        return new Response(JSON.stringify({ error: "Failed to create recommendation session" }), { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
+      }
+
+      // Set up SSE stream
+      const stream = new ReadableStream({
+        async start(controller) {
+          const encoder = new TextEncoder();
+          
+          // Helper to send SSE event
+          const sendEvent = (data: any) => {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+          };
+
+          try {
+            // Send session started event
+            sendEvent({
+              type: "session_started",
+              session_id: session.id,
+              profile_id: body.profile_id,
+              session_type,
+              total_expected: FINAL_COUNT,
+              created_at: session.created_at,
+            });
+
+            const allCards: RecommendationCard[] = [];
+            const recItems: any[] = [];
+
+            // Process candidates sequentially and stream each card
+            const chosen = await processCandidatesSequential(
+              ctx,
+              payload1.items,
+              supabaseAdmin,
+              content_types,
+              excludedNormalizedTitles,
+              excludedTmdbKeys,
+              chosenNorm,
+              userRegion,
+              FINAL_COUNT,
+              (result, index) => {
+                // Callback when card is ready - send it immediately
+                const card = buildRecommendationCard(result);
+                allCards.push(card);
+                
+                // Store recommendation item in DB
+                recItems.push({
+                  session_id: session.id,
+                  title_id: result.mediaRow.id,
+                  rank_index: index,
+                  openai_reason: result.item?.reason ?? null,
+                  match_score: result.item?.match_score ?? null,
+                  created_at: nowIso(),
+                });
+
+                // Store streaming providers
+                if (result.watchProviders.providerAvailability.length > 0) {
+                  storeStreamingProviders(ctx, supabaseAdmin, result.mediaRow.id, result.watchProviders.providerAvailability, userRegion, result.watchProviders.link).catch((err) => {
+                    log(ctx, "Error storing streaming providers during stream", err);
+                  });
+                }
+
+                // Send card event
+                log(ctx, `Streaming card ${index + 1}/${FINAL_COUNT}: ${card.title}`);
+                sendEvent({
+                  type: "card",
+                  card,
+                  index,
+                });
+              }
+            );
+
+            // Handle top-up if needed
+            if (chosen.length < FINAL_COUNT) {
+              const missing = FINAL_COUNT - chosen.length;
+              log(ctx, "Top-up needed during streaming", { missing });
+
+              const chosenTitles = chosen.map((c) => String(c.item?.title || "")).filter(Boolean);
+              const topupPromptObj = { ...promptObj, topup_missing_count: missing, already_selected_titles: chosenTitles, instruction: `Return exactly ${missing} additional items that are not excluded and not already selected.` };
+
+              for (let attempt = 0; attempt < TOPUP_MAX_ATTEMPTS && chosen.length < FINAL_COUNT; attempt++) {
+                const payload2 = await callOpenAI(ctx, topupPromptObj, missing, content_types, Array.from(new Set(hardExcludedTitlesForPrompt.concat(chosenTitles))), Array.from(new Set(softExcludedTitlesForPrompt.concat(chosenTitles))), positiveSignals, negativeSignals);
+                if (!finalMoodLabel && payload2.mood_label) finalMoodLabel = payload2.mood_label;
+                if ((!finalMoodTags || finalMoodTags.length === 0) && Array.isArray(payload2.mood_tags)) finalMoodTags = payload2.mood_tags;
+
+                await processCandidatesSequential(
+                  ctx,
+                  payload2.items,
+                  supabaseAdmin,
+                  content_types,
+                  excludedNormalizedTitles,
+                  excludedTmdbKeys,
+                  chosenNorm,
+                  userRegion,
+                  missing - (chosen.length - allCards.length),
+                  (result, relativeIndex) => {
+                    const absoluteIndex = allCards.length;
+                    const card = buildRecommendationCard(result);
+                    allCards.push(card);
+                    chosen.push(result);
+
+                    recItems.push({
+                      session_id: session.id,
+                      title_id: result.mediaRow.id,
+                      rank_index: absoluteIndex,
+                      openai_reason: result.item?.reason ?? null,
+                      match_score: result.item?.match_score ?? null,
+                      created_at: nowIso(),
+                    });
+
+                    if (result.watchProviders.providerAvailability.length > 0) {
+                      storeStreamingProviders(ctx, supabaseAdmin, result.mediaRow.id, result.watchProviders.providerAvailability, userRegion, result.watchProviders.link).catch((err) => {
+                        log(ctx, "Error storing streaming providers during topup", err);
+                      });
+                    }
+
+                    log(ctx, `Streaming topup card ${absoluteIndex + 1}/${FINAL_COUNT}: ${card.title}`);
+                    sendEvent({
+                      type: "card",
+                      card,
+                      index: absoluteIndex,
+                    });
+                  }
+                );
+              }
+            }
+
+            // Insert all recommendation items at once
+            if (recItems.length > 0) {
+              const { error: itemsErr } = await supabaseAdmin.from("recommendation_items").insert(recItems);
+              if (itemsErr) log(ctx, "Failed to insert recommendation_items", itemsErr);
+            }
+
+            // Update session with top_title_id
+            if (allCards.length > 0) {
+              const topTitleId = recItems[0]?.title_id;
+              if (topTitleId) {
+                await supabaseAdmin.from("recommendation_sessions").update({ top_title_id: topTitleId }).eq("id", session.id);
+              }
+            }
+
+            // Send completion event
+            log(ctx, `Streaming complete with ${allCards.length} cards`);
+            sendEvent({
+              type: "complete",
+              id: session.id,
+              profile_id: body.profile_id,
+              session_type,
+              mood_input: { ...(mood_input as any), content_types },
+              created_at: session.created_at,
+              cards: allCards,
+            });
+
+            controller.close();
+          } catch (error) {
+            log(ctx, "Error during streaming", error);
+            sendEvent({
+              type: "error",
+              message: String(error),
+            });
+            controller.close();
+          }
+        },
+      });
+
+      return new Response(stream, { status: 200, headers: SSE_HEADERS });
+    }
+
+    // NON-STREAMING MODE (original behavior)
+    let chosen = await processCandidatesParallel(ctx, payload1.items, supabaseAdmin, content_types, excludedNormalizedTitles, excludedTmdbKeys, chosenNorm, userRegion, FINAL_COUNT);
 
     if (chosen.length < FINAL_COUNT) {
       const missing = FINAL_COUNT - chosen.length;
@@ -965,33 +1266,7 @@ serve(async (req: Request) => {
       ),
     );
 
-    const cards: RecommendationCard[] = finalChosen.map((c) => {
-      const t = c.mediaRow;
-      let duration = "";
-      if (t.runtime_minutes) {
-        const hours = Math.floor(t.runtime_minutes / 60);
-        const mins = t.runtime_minutes % 60;
-        duration = hours > 0 ? `${hours}h ${mins}m` : `${mins}m`;
-      }
-      return {
-        title_id: t.id,
-        title: t.title,
-        year: t.year?.toString() ?? "",
-        duration,
-        genres: t.genres ?? [],
-        rating: t.imdb_rating?.toString() ?? "",
-        age_rating: t.age_rating ?? "",
-        quote: c.item?.reason ?? "",
-        description: t.overview ?? "",
-        poster_url: t.poster_url,
-        match_score: c.item?.match_score ?? null,
-        tmdb_type: t.tmdb_type,
-        director: t.director ?? "",
-        starring: t.starring ?? [],
-        watch_provider_link: c.watchProviders.link,
-        watch_providers: c.watchProviders.providers,
-      };
-    });
+    const cards: RecommendationCard[] = finalChosen.map((c) => buildRecommendationCard(c));
 
     log(ctx, "Successfully created recommendation session", { sessionId: session.id, cardsCount: cards.length, userRegion });
     return new Response(JSON.stringify({ id: session.id, profile_id: body.profile_id, session_type, mood_input: { ...(mood_input as any), content_types }, created_at: session.created_at, cards }), { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });

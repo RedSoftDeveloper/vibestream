@@ -295,17 +295,17 @@ class _RecommendationResultsPageState extends State<RecommendationResultsPage> {
   }
 
   Widget _buildCardStack(BuildContext context, bool isDark, RecommendationsState state) {
-    // Show completion state
-    if (state.isCompleted && !state.isStreaming) {
+    // Show completion state (only when all cards are exhausted)
+    if (state.isCompleted && !state.isStreaming && state.cards.isNotEmpty) {
       return _buildCompletionState(context, isDark, state);
     }
 
     // Show shimmer loading while streaming with no cards yet
-    if (state.isStreaming && state.cards.isEmpty) {
+    if (state.cards.isEmpty) {
       return _buildStreamingShimmerCard(isDark);
     }
 
-    // Show card stack
+    // Show card stack (works during streaming and after)
     return Stack(
       alignment: Alignment.center,
       children: [
@@ -337,8 +337,8 @@ class _RecommendationResultsPageState extends State<RecommendationResultsPage> {
         // Current card with drag (if available)
         if (state.currentCard != null)
           GestureDetector(
-            onHorizontalDragUpdate: (details) => _cubit.onDragUpdate(details.delta.dx),
-            onHorizontalDragEnd: (details) => _cubit.onDragEnd(details.primaryVelocity),
+            onHorizontalDragUpdate: state.isStreaming ? null : (details) => _cubit.onDragUpdate(details.delta.dx),
+            onHorizontalDragEnd: state.isStreaming ? null : (details) => _cubit.onDragEnd(details.primaryVelocity),
             child: Transform.translate(
               offset: Offset(state.swipeOffset, 0),
               child: Transform.rotate(
@@ -350,10 +350,6 @@ class _RecommendationResultsPageState extends State<RecommendationResultsPage> {
               ),
             ),
           ),
-        
-        // No cards yet during streaming - show shimmer card
-        if (state.currentCard == null && state.isStreaming)
-          _buildStreamingShimmerCard(isDark),
       ],
     );
   }
