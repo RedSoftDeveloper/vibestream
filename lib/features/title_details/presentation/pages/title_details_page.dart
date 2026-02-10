@@ -98,7 +98,12 @@ class _TitleDetailsPageState extends State<TitleDetailsPage> {
       }
 
       // Load more suggestions, check feedback status, check favorite status, and streaming providers
-      final profileId = _profileService.selectedProfileId;
+      final activeProfile = await _profileService.getActiveProfile();
+      final profileId = activeProfile?.id;
+      final region = activeProfile?.countryCode ?? 'US';
+      
+      debugPrint('TitleDetailsPage: Loading data for region: $region');
+
       List<TitleDetail> suggestions = [];
       bool hasFeedback = false;
       bool isFavorite = false;
@@ -107,8 +112,8 @@ class _TitleDetailsPageState extends State<TitleDetailsPage> {
       
       // Fetch streaming providers and watch link in parallel with other data
       final providersFutures = Future.wait([
-        _streamingProviderService.getAvailabilityForTitle(titleId: widget.titleId),
-        _streamingProviderService.getWatchProviderLink(widget.titleId),
+        _streamingProviderService.getAvailabilityForTitle(titleId: widget.titleId, region: region),
+        _streamingProviderService.getWatchProviderLink(widget.titleId, region: region),
       ]);
       
       if (profileId != null) {
