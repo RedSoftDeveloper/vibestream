@@ -128,7 +128,7 @@ class _RecommendationResultsPageState extends State<RecommendationResultsPage> {
                     const SizedBox(height: 16),
                     Expanded(child: _buildCardStack(context, isDark, state)),
                     const SizedBox(height: 20),
-                    if (state.hasMoreCards && !state.isStreaming) _buildActionButtons(context, isDark),
+                    if (state.hasMoreCards) _buildActionButtons(context, isDark),
                     if (state.isStreaming) _buildStreamingIndicator(context, isDark, state),
                     const SizedBox(height: 24),
                   ],
@@ -243,6 +243,11 @@ class _RecommendationResultsPageState extends State<RecommendationResultsPage> {
     final receivedCount = state.receivedCardsCount;
     final isStreaming = state.isStreaming;
 
+    // Handle case where totalDots is 0 to avoid RangeError
+    if (totalDots <= 0) {
+      return const SizedBox.shrink();
+    }
+
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: List.generate(
@@ -337,8 +342,8 @@ class _RecommendationResultsPageState extends State<RecommendationResultsPage> {
         // Current card with drag (if available)
         if (state.currentCard != null)
           GestureDetector(
-            onHorizontalDragUpdate: state.isStreaming ? null : (details) => _cubit.onDragUpdate(details.delta.dx),
-            onHorizontalDragEnd: state.isStreaming ? null : (details) => _cubit.onDragEnd(details.primaryVelocity),
+            onHorizontalDragUpdate: (details) => _cubit.onDragUpdate(details.delta.dx),
+            onHorizontalDragEnd: (details) => _cubit.onDragEnd(details.primaryVelocity),
             child: Transform.translate(
               offset: Offset(state.swipeOffset, 0),
               child: Transform.rotate(
