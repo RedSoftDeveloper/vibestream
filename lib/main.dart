@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:vibestream/core/routing/app_router.dart';
 import 'package:vibestream/core/services/analytics_service.dart';
@@ -16,19 +17,71 @@ import 'package:vibestream/supabase/supabase_config.dart';
 /// - Theming with light/dark mode support
 /// - Supabase initialization for auth and database
 /// - RevenueCat subscription service
-void main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  
-  // Initialize Supabase
-  await SupabaseConfig.initialize();
 
-  // Initialize analytics (Mixpanel). Safe to fail.
-  await AnalyticsService.initialize();
+  FlutterError.onError = (details) {
+    FlutterError.presentError(details);
+    debugPrint('FlutterError: ${details.exceptionAsString()}');
+    debugPrint('FlutterError stack: ${details.stack}');
+  };
 
-  // Initialize RevenueCat
-  await SubscriptionService.instance.initialize();
-  
-  runApp(const VibeStreamApp());
+  PlatformDispatcher.instance.onError = (error, stack) {
+    debugPrint('Uncaught zone error: $error');
+    debugPrint('Uncaught zone stack: $stack');
+    return true;
+  };
+
+  runApp(const _Bootstrapper());
+}
+
+class _Bootstrapper extends StatefulWidget {
+  const _Bootstrapper();
+
+  @override
+  State<_Bootstrapper> createState() => _BootstrapperState();
+}
+
+class _BootstrapperState extends State<_Bootstrapper> {
+  bool _ready = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _init();
+  }
+
+  Future<void> _init() async {
+    try {
+      await SupabaseConfig.initialize();
+    } catch (e) {
+      debugPrint('Failed to initialize Supabase: $e');
+    }
+
+    try {
+      await AnalyticsService.initialize();
+    } catch (e) {
+      debugPrint('Failed to initialize AnalyticsService: $e');
+    }
+
+    // RevenueCat is mobile-only; SubscriptionService is web-safe and no-ops on web.
+    try {
+      await SubscriptionService.instance.initialize();
+    } catch (e) {
+      debugPrint('Failed to initialize SubscriptionService: $e');
+    }
+
+    if (mounted) setState(() => _ready = true);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_ready) {
+      // Minimal, theme-agnostic loader while bootstrapping.
+      return const MaterialApp(home: Scaffold(body: Center(child: CircularProgressIndicator())));
+    }
+    return const VibeStreamApp();
+  }
 }
 
 class VibeStreamApp extends StatelessWidget {

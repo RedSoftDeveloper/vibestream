@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:purchases_flutter/purchases_flutter.dart';
@@ -31,24 +30,42 @@ class SubscriptionService {
   bool _isPremium = false;
   bool get isPremium => _isPremium;
 
-  Future<void> initialize() async {
-    await Purchases.setLogLevel(LogLevel.debug);
+  bool _isInitialized = false;
+  bool get isInitialized => _isInitialized;
 
-    PurchasesConfiguration? configuration;
-    if (Platform.isAndroid) {
-      configuration = PurchasesConfiguration(_apiKeyAndroid);
-    } else if (Platform.isIOS) {
-      configuration = PurchasesConfiguration(_apiKeyIOS);
+  Future<void> initialize() async {
+    if (kIsWeb) {
+      // RevenueCat does not support Flutter Web. Keep this service as a no-op.
+      debugPrint('SubscriptionService: skipped initialization on Web.');
+      return;
     }
 
-    if (configuration != null) {
+    try {
+      await Purchases.setLogLevel(LogLevel.debug);
+
+      PurchasesConfiguration? configuration;
+      if (defaultTargetPlatform == TargetPlatform.android) {
+        configuration = PurchasesConfiguration(_apiKeyAndroid);
+      } else if (defaultTargetPlatform == TargetPlatform.iOS) {
+        configuration = PurchasesConfiguration(_apiKeyIOS);
+      }
+
+      if (configuration == null) {
+        debugPrint('SubscriptionService: unsupported platform: $defaultTargetPlatform');
+        return;
+      }
+
       await Purchases.configure(configuration);
+      _isInitialized = true;
       await _checkSubscriptionStatus();
-      
-      // Listen for updates
+
       Purchases.addCustomerInfoUpdateListener((customerInfo) {
         _updateCustomerStatus(customerInfo);
       });
+    } catch (e) {
+      // On some platforms/environments (e.g. web preview, tests) plugins may not be registered.
+      debugPrint('SubscriptionService: failed to initialize RevenueCat: $e');
+      _isInitialized = false;
     }
   }
 
@@ -76,6 +93,14 @@ class SubscriptionService {
   /// If [offerings] is provided, it will show the paywall for that offering.
   /// Otherwise it uses the default offering.
   Future<void> showPaywall() async {
+    if (kIsWeb) {
+      debugPrint('SubscriptionService: showPaywall is not supported on Web.');
+      throw StateError('Subscriptions are not available on Web.');
+    }
+    if (!_isInitialized) {
+      debugPrint('SubscriptionService: showPaywall requested before initialization.');
+      throw StateError('Subscriptions are not initialized yet.');
+    }
     try {
       // You can use presentPaywallIfNeeded if you only want to show it to non-subscribers
       // But usually "Get Premium" button implies force showing it.
@@ -83,11 +108,16 @@ class SubscriptionService {
       debugPrint('Paywall result: $paywallResult');
     } catch (e) {
       debugPrint('Error showing paywall: $e');
+      rethrow;
     }
   }
   
   /// Restore purchases
   Future<void> restorePurchases() async {
+    if (kIsWeb || !_isInitialized) {
+      debugPrint('SubscriptionService: restorePurchases skipped (not initialized / web).');
+      return;
+    }
     try {
       final customerInfo = await Purchases.restorePurchases();
       _updateCustomerStatus(customerInfo);

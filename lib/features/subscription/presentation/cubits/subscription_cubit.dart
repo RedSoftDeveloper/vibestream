@@ -35,9 +35,15 @@ class SubscriptionCubit extends Cubit<SubscriptionState> {
       await _subscriptionService.showPaywall();
     } catch (e) {
       emit(state.copyWith(
+        status: SubscriptionStatus.failure,
         errorMessage: 'Failed to show paywall: $e',
       ));
     }
+  }
+
+  void clearError() {
+    if (state.errorMessage == null) return;
+    emit(state.copyWith(errorMessage: null));
   }
 
   Future<void> restorePurchases() async {

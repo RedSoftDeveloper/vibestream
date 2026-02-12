@@ -406,7 +406,13 @@ class _SettingsPageContent extends StatelessWidget {
   }
 
   Widget _buildSubscriptionCard(BuildContext context, bool isDark) {
-    return BlocBuilder<SubscriptionCubit, SubscriptionState>(
+    return BlocConsumer<SubscriptionCubit, SubscriptionState>(
+      listener: (context, state) {
+        final msg = state.errorMessage;
+        if (msg == null || msg.trim().isEmpty) return;
+        SnackbarUtils.showError(context, msg);
+        context.read<SubscriptionCubit>().clearError();
+      },
       builder: (context, state) {
         final isPremium = state.isPremium;
         return Container(
