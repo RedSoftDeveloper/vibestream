@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:vibestream/core/routing/app_router.dart';
 import 'package:vibestream/core/services/analytics_service.dart';
+import 'package:vibestream/core/services/subscription_service.dart';
 import 'package:vibestream/core/theme/app_theme.dart';
 import 'package:vibestream/core/theme/theme_cubit.dart';
+import 'package:vibestream/features/subscription/presentation/cubits/subscription_cubit.dart';
 import 'package:vibestream/supabase/supabase_config.dart';
 
 /// VibeStream - Discover movies and series based on your mood
@@ -13,6 +15,7 @@ import 'package:vibestream/supabase/supabase_config.dart';
 /// - Routing via go_router
 /// - Theming with light/dark mode support
 /// - Supabase initialization for auth and database
+/// - RevenueCat subscription service
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
@@ -21,6 +24,9 @@ void main() async {
 
   // Initialize analytics (Mixpanel). Safe to fail.
   await AnalyticsService.initialize();
+
+  // Initialize RevenueCat
+  await SubscriptionService.instance.initialize();
   
   runApp(const VibeStreamApp());
 }
@@ -30,8 +36,11 @@ class VibeStreamApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return BlocProvider(
-      create: (_) => ThemeCubit(),
+    return MultiBlocProvider(
+      providers: [
+        BlocProvider(create: (_) => ThemeCubit()),
+        BlocProvider(create: (_) => SubscriptionCubit()),
+      ],
       child: BlocBuilder<ThemeCubit, ThemeMode>(
         builder: (context, themeMode) => MaterialApp.router(
           title: 'VibeStream',

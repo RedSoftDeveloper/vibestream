@@ -10,6 +10,8 @@ import 'package:vibestream/core/theme/theme_cubit.dart';
 import 'package:vibestream/core/utils/snackbar_utils.dart';
 import 'package:vibestream/features/settings/presentation/cubits/settings_cubit.dart';
 import 'package:vibestream/features/settings/presentation/cubits/settings_state.dart';
+import 'package:vibestream/features/subscription/presentation/cubits/subscription_cubit.dart';
+import 'package:vibestream/features/subscription/presentation/cubits/subscription_state.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
@@ -293,6 +295,8 @@ class _SettingsPageContent extends StatelessWidget {
                         const SizedBox(height: 8),
                         _buildProfileHeader(context, state, isDark),
                         const SizedBox(height: 16),
+                        _buildSubscriptionCard(context, isDark),
+                        const SizedBox(height: 16),
                         _buildCard(isDark, [
                           _buildTileItem(
                             icon: Icons.person_outline,
@@ -394,6 +398,96 @@ class _SettingsPageContent extends StatelessWidget {
                   ),
                 ),
               ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildSubscriptionCard(BuildContext context, bool isDark) {
+    return BlocBuilder<SubscriptionCubit, SubscriptionState>(
+      builder: (context, state) {
+        final isPremium = state.isPremium;
+        return Container(
+          decoration: BoxDecoration(
+            gradient: isPremium 
+              ? LinearGradient(
+                  colors: [Colors.purple.shade700, Colors.blue.shade700],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                )
+              : null,
+            color: isPremium ? null : (isDark ? const Color(0xFF1A1A1A) : Colors.white),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(
+              color: isPremium ? Colors.transparent : (isDark ? const Color(0xFF2A2A2A) : const Color(0xFFE5E5E5)),
+              width: 1,
+            ),
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: () {
+                if (!isPremium) {
+                   context.read<SubscriptionCubit>().showPaywall();
+                } else {
+                   SnackbarUtils.showSuccess(context, "You are a Premium member!");
+                }
+              },
+              borderRadius: BorderRadius.circular(16),
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: isPremium ? Colors.white.withValues(alpha: 0.2) : (isDark ? const Color(0xFF2A2A2A) : const Color(0xFFF0F0F0)),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        Icons.diamond_outlined,
+                        color: isPremium ? Colors.white : Colors.purple,
+                        size: 24,
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            isPremium ? 'VibeStream Premium' : 'Upgrade to Premium',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                              color: isPremium || isDark ? Colors.white : Colors.black,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            isPremium ? 'Active subscription' : 'Unlock unlimited vibes & no ads',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: isPremium 
+                                ? Colors.white.withValues(alpha: 0.8) 
+                                : (isDark ? const Color(0xFF808080) : const Color(0xFF606060)),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Icon(
+                      Icons.arrow_forward_ios,
+                      size: 16,
+                      color: isPremium 
+                        ? Colors.white.withValues(alpha: 0.8) 
+                        : (isDark ? const Color(0xFF606060) : const Color(0xFFA0A0A0)),
+                    ),
+                  ],
+                ),
+              ),
             ),
           ),
         );

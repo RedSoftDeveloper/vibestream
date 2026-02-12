@@ -7,6 +7,8 @@ version: 1.0.0+13
 environment:
   sdk: ^3.6.0
 dependencies:
+  purchases_ui_flutter: ^9.0.0
+  purchases_flutter: ^9.0.0
   mixpanel_flutter: ^2.0.0
   country_picker: ^2.0.0
   google_sign_in: '^6.2.1'
