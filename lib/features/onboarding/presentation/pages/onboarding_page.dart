@@ -163,11 +163,31 @@ class _OnboardingPageState extends State<OnboardingPage> {
     if (selected == null) return;
 
     // Store country code at the account level (app_users.region)
-    // and also store (code+name) inside profile_preferences.answers.
+    // and also store (code+name) inside:
+    // - profiles.country_code / profiles.country_name (used by Settings + title availability)
+    // - profile_preferences.answers (used by recommendation tuning)
     try {
       await _appUserService.updateRegion(region: selected.countryCode);
     } catch (e) {
       debugPrint('OnboardingPage: Failed to update app user region: $e');
+    }
+
+    // Persist on the active profile so Settings shows the selection.
+    try {
+      final profileId = _activeProfileId;
+      if (profileId != null) {
+        // Ensure ProfileService knows which profile is active for this user.
+        await _profileService.setActiveProfile(profileId);
+      }
+      final ok = await _profileService.updateActiveProfileCountry(
+        countryCode: selected.countryCode,
+        countryName: selected.name,
+      );
+      if (!ok) {
+        debugPrint('OnboardingPage: Failed to persist country on active profile');
+      }
+    } catch (e) {
+      debugPrint('OnboardingPage: Failed to update profile country: $e');
     }
   }
 

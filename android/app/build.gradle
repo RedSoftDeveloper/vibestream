@@ -12,6 +12,12 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
 }
 
+def hasReleaseSigning = keystorePropertiesFile.exists() &&
+        keystoreProperties['keyAlias'] &&
+        keystoreProperties['keyPassword'] &&
+        keystoreProperties['storeFile'] &&
+        keystoreProperties['storePassword']
+
 android {
     namespace = "com.vsapps.discovery"
     compileSdk = flutter.compileSdkVersion
@@ -27,12 +33,14 @@ android {
     }
 
     signingConfigs {
-       release {
-           keyAlias keystoreProperties['keyAlias']
-           keyPassword keystoreProperties['keyPassword']
-           storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null
-           storePassword keystoreProperties['storePassword']
-       }
+        if (hasReleaseSigning) {
+            release {
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+                storeFile file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+            }
+        }
     }
 
     defaultConfig {
@@ -48,8 +56,15 @@ android {
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+            if (!hasReleaseSigning) {
+                throw new GradleException(
+                        "Missing Android release signing configuration.\n" +
+                                "Expected android/key.properties with: storeFile, storePassword, keyAlias, keyPassword.\n" +
+                                "Also ensure the referenced keystore file exists in the android/ directory.\n" +
+                                "Without this, 'flutter build appbundle' (AAB) cannot be produced for Google Play."
+                )
+            }
+
             signingConfig = signingConfigs.release
         }
     }
