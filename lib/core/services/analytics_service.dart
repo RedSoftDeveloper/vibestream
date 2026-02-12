@@ -10,7 +10,7 @@ import 'package:mixpanel_flutter/mixpanel_flutter.dart';
 class AnalyticsService {
   AnalyticsService._(this._mixpanel);
 
-  final Mixpanel _mixpanel;
+  final Mixpanel? _mixpanel;
 
   static AnalyticsService? _instance;
 
@@ -34,10 +34,21 @@ class AnalyticsService {
   static Future<void> initialize() async {
     if (_instance != null) return;
 
+    // Dreamflow runs the preview on Web. Mixpanel's Flutter plugin currently
+    // relies on a JS SDK initialization that isn't available in this project,
+    // which causes runtime errors like:
+    // "TypeError: Cannot read properties of undefined (reading 'init')".
+    // Since this app targets mobile, we keep analytics as a no-op on Web.
+    if (kIsWeb) {
+      _instance = AnalyticsService._(null);
+      return;
+    }
+
     final token = _tokenFromEnv.trim();
     if (token.isEmpty) {
       debugPrint('Mixpanel token missing. Set --dart-define=MIXPANEL_PROJECT_TOKEN=...');
       // Still create a no-op instance by skipping initialization.
+      _instance = AnalyticsService._(null);
       return;
     }
 
@@ -51,28 +62,36 @@ class AnalyticsService {
       debugPrint('Mixpanel initialized');
     } catch (e) {
       debugPrint('Failed to initialize Mixpanel: $e');
+      // Ensure we still have a usable no-op instance so callers don't crash.
+      _instance = AnalyticsService._(null);
     }
   }
 
   void track(String eventName, {Map<String, dynamic>? properties}) {
+    final mixpanel = _mixpanel;
+    if (mixpanel == null) return;
     try {
-      _mixpanel.track(eventName, properties: properties);
+      mixpanel.track(eventName, properties: properties);
     } catch (e) {
       debugPrint('Mixpanel track failed ($eventName): $e');
     }
   }
 
   void identify(String distinctId) {
+    final mixpanel = _mixpanel;
+    if (mixpanel == null) return;
     try {
-      _mixpanel.identify(distinctId);
+      mixpanel.identify(distinctId);
     } catch (e) {
       debugPrint('Mixpanel identify failed: $e');
     }
   }
 
   void setUserProperties(Map<String, dynamic> properties) {
+    final mixpanel = _mixpanel;
+    if (mixpanel == null) return;
     try {
-      final people = _mixpanel.getPeople();
+      final people = mixpanel.getPeople();
       for (final entry in properties.entries) {
         people.set(entry.key, entry.value);
       }
@@ -82,8 +101,10 @@ class AnalyticsService {
   }
 
   void reset() {
+    final mixpanel = _mixpanel;
+    if (mixpanel == null) return;
     try {
-      _mixpanel.reset();
+      mixpanel.reset();
     } catch (e) {
       debugPrint('Mixpanel reset failed: $e');
     }
