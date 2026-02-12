@@ -161,8 +161,15 @@ class RecommendationsCubit extends Cubit<RecommendationsState> {
         debugPrint('RecommendationsCubit: Streaming error - ${event.message}');
         emit(state.copyWith(
           streamingError: event.message,
+          showPaywall: event.isLimitReached,
+          limitReached: event.isLimitReached,
         ));
     }
+  }
+
+  void consumePaywallRequest() {
+    if (!state.showPaywall) return;
+    emit(state.copyWith(showPaywall: false));
   }
 
   void clearError() {

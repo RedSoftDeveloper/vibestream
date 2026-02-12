@@ -20,6 +20,8 @@ class RecommendationsState extends Equatable {
   final int totalExpectedCards;
   final int receivedCardsCount;
   final String? streamingError;
+  final bool showPaywall;
+  final bool limitReached;
 
   const RecommendationsState({
     this.status = RecommendationsStatus.initial,
@@ -31,6 +33,8 @@ class RecommendationsState extends Equatable {
     this.totalExpectedCards = 5,
     this.receivedCardsCount = 0,
     this.streamingError,
+    this.showPaywall = false,
+    this.limitReached = false,
   });
 
   List<RecommendationCard> get cards => session?.cards ?? [];
@@ -79,6 +83,8 @@ class RecommendationsState extends Equatable {
     int? totalExpectedCards,
     int? receivedCardsCount,
     String? streamingError,
+    bool? showPaywall,
+    bool? limitReached,
     bool clearError = false,
   }) {
     return RecommendationsState(
@@ -91,6 +97,8 @@ class RecommendationsState extends Equatable {
       totalExpectedCards: totalExpectedCards ?? this.totalExpectedCards,
       receivedCardsCount: receivedCardsCount ?? this.receivedCardsCount,
       streamingError: clearError ? null : (streamingError ?? this.streamingError),
+      showPaywall: showPaywall ?? this.showPaywall,
+      limitReached: limitReached ?? this.limitReached,
     );
   }
 
@@ -105,5 +113,7 @@ class RecommendationsState extends Equatable {
     totalExpectedCards,
     receivedCardsCount,
     streamingError,
+    showPaywall,
+    limitReached,
   ];
 }

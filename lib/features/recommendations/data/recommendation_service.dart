@@ -543,7 +543,7 @@ class RecommendationService {
 
         if (streamedResponse.statusCode == 429) {
           final limitEx = RecommendationLimitException.fromResponseData(responseBody);
-          yield StreamingError(message: limitEx.message);
+          yield StreamingError(message: limitEx.message, isLimitReached: true);
         } else {
           yield StreamingError(message: 'Failed to start recommendation stream: ${streamedResponse.statusCode}');
         }

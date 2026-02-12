@@ -1,4 +1,5 @@
 import 'dart:ui';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
@@ -10,6 +11,8 @@ import 'package:vibestream/features/recommendations/domain/entities/recommendati
 import 'package:vibestream/features/recommendations/data/interaction_service.dart';
 import 'package:vibestream/features/recommendations/presentation/cubits/recommendations_cubit.dart';
 import 'package:vibestream/features/recommendations/presentation/cubits/recommendations_state.dart';
+import 'package:vibestream/features/subscription/presentation/cubits/subscription_cubit.dart';
+import 'package:vibestream/core/utils/snackbar_utils.dart';
 
 class RecommendationResultsPage extends StatefulWidget {
   final RecommendationSession? session;
@@ -97,11 +100,29 @@ class _RecommendationResultsPageState extends State<RecommendationResultsPage> {
         body: SafeArea(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24),
-            child: BlocBuilder<RecommendationsCubit, RecommendationsState>(
+            child: BlocConsumer<RecommendationsCubit, RecommendationsState>(
+              listenWhen: (prev, next) => prev.showPaywall != next.showPaywall,
+              listener: (context, state) async {
+                if (!state.showPaywall) return;
+                context.read<RecommendationsCubit>().consumePaywallRequest();
+                try {
+                  await context.read<SubscriptionCubit>().showPaywall();
+                } catch (e) {
+                  debugPrint('RecommendationResultsPage: failed to show paywall: $e');
+                  if (context.mounted) {
+                    SnackbarUtils.showWarning(context, 'Subscriptions are not available on this platform.');
+                  }
+                }
+              },
               builder: (context, state) {
                 // Show error state
                 if (state.streamingError != null) {
-                  return _buildErrorState(context, isDark, state.streamingError!);
+                  return _buildErrorState(
+                    context,
+                    isDark,
+                    state.streamingError!,
+                    isLimitReached: state.limitReached,
+                  );
                 }
 
                 return Column(
@@ -141,7 +162,7 @@ class _RecommendationResultsPageState extends State<RecommendationResultsPage> {
     );
   }
 
-  Widget _buildErrorState(BuildContext context, bool isDark, String error) {
+  Widget _buildErrorState(BuildContext context, bool isDark, String error, {required bool isLimitReached}) {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -149,13 +170,13 @@ class _RecommendationResultsPageState extends State<RecommendationResultsPage> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(
-              Icons.error_outline,
+              isLimitReached ? Icons.lock_outline : Icons.error_outline,
               size: 64,
               color: isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary,
             ),
             const SizedBox(height: 24),
             Text(
-              'Something went wrong',
+              isLimitReached ? 'Daily limit reached' : 'Something went wrong',
               style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600),
               textAlign: TextAlign.center,
             ),
@@ -168,16 +189,43 @@ class _RecommendationResultsPageState extends State<RecommendationResultsPage> {
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 32),
-            ElevatedButton(
-              onPressed: () => _navigateBack(context),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: isDark ? AppColors.lightSurface : AppColors.lightText,
-                foregroundColor: isDark ? AppColors.lightText : AppColors.lightSurface,
-                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            if (isLimitReached) ...[
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () => context.read<SubscriptionCubit>().showPaywall(),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isDark ? AppColors.lightSurface : AppColors.lightText,
+                    foregroundColor: isDark ? AppColors.lightText : AppColors.lightSurface,
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                    elevation: 0,
+                  ),
+                  child: const Text('Upgrade to Premium'),
+                ),
               ),
-              child: const Text('Go Back'),
-            ),
+              const SizedBox(height: 12),
+              TextButton(
+                onPressed: () => _navigateBack(context),
+                child: Text(
+                  'Not now',
+                  style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                    color: isDark ? AppColors.darkTextSecondary : AppColors.lightTextSecondary,
+                  ),
+                ),
+              ),
+            ] else
+              ElevatedButton(
+                onPressed: () => _navigateBack(context),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: isDark ? AppColors.lightSurface : AppColors.lightText,
+                  foregroundColor: isDark ? AppColors.lightText : AppColors.lightSurface,
+                  padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+                  elevation: 0,
+                ),
+                child: const Text('Go Back'),
+              ),
           ],
         ),
       ),

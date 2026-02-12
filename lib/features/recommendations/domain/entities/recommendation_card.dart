@@ -172,6 +172,7 @@ class StreamingCompleted extends StreamingRecommendationEvent {
 /// Streaming encountered an error
 class StreamingError extends StreamingRecommendationEvent {
   final String message;
+  final bool isLimitReached;
 
-  StreamingError({required this.message});
+  StreamingError({required this.message, this.isLimitReached = false});
 }
