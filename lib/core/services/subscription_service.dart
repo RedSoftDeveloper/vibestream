@@ -19,11 +19,11 @@ class SubscriptionService {
   static SubscriptionService get instance => _instance;
 
   // TODO: Replace with your actual RevenueCat API keys
-  static const _apiKeyAndroid = 'goog_YOUR_ANDROID_API_KEY';
-  static const _apiKeyIOS = 'appl_YOUR_IOS_API_KEY';
+  static const _apiKeyAndroid = 'goog_jlONPShzXtMrvNcVuNZtPQBaFjl';
+  static const _apiKeyIOS = 'appl_BUTtPvMIHwXzkOWsUtqTHrRgyVu';
   
   // The entitlement ID configured in RevenueCat dashboard
-  static const _entitlementID = 'premium'; 
+  static const _entitlementID = 'VibeStream Premium'; 
 
   final _premiumStatusController = StreamController<bool>.broadcast();
   Stream<bool> get premiumStatusStream => _premiumStatusController.stream;
