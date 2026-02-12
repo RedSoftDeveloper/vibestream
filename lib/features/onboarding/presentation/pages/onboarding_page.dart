@@ -1385,6 +1385,7 @@ class _OnboardingCountryStepState extends State<OnboardingCountryStep> {
     final textColor = isDark ? AppColors.darkText : AppColors.lightText;
     final surface = isDark ? AppColors.darkSurfaceVariant : AppColors.lightSurface;
     final border = isDark ? Colors.transparent : AppColors.lightBorder;
+    final dividerColor = (isDark ? AppColors.darkSurfaceVariant : AppColors.lightBorder).withValues(alpha: 0.6);
 
     final suggested = <Country>[];
     final byCode = {for (final c in _allCountries) c.countryCode: c};
@@ -1395,81 +1396,96 @@ class _OnboardingCountryStepState extends State<OnboardingCountryStep> {
 
     final selectedCode = widget.selected?.countryCode;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Where are you right now?',
-          style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w700),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          'We’ll use this to tailor streaming availability for your region.',
-          style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: textSecondary),
-        ),
-        const SizedBox(height: 16),
-        Container(
-          decoration: BoxDecoration(
-            color: surface,
-            borderRadius: BorderRadius.circular(AppRadius.lg),
-            border: Border.all(color: border, width: 1),
+    return CustomScrollView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+      slivers: [
+        SliverToBoxAdapter(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Where are you right now?',
+                style: Theme.of(context).textTheme.headlineMedium?.copyWith(fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'We’ll use this to tailor streaming availability for your region.',
+                style: Theme.of(context).textTheme.bodyLarge?.copyWith(color: textSecondary),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                decoration: BoxDecoration(
+                  color: surface,
+                  borderRadius: BorderRadius.circular(AppRadius.lg),
+                  border: Border.all(color: border, width: 1),
+                ),
+                child: TextField(
+                  onChanged: _filter,
+                  decoration: InputDecoration(
+                    hintText: 'Search country',
+                    hintStyle: TextStyle(color: textSecondary),
+                    prefixIcon: Icon(Icons.search, color: textSecondary),
+                    border: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              if (_query.trim().isEmpty) ...[
+                Text(
+                  'Suggested',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700, color: textColor),
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: suggested.map((c) {
+                    final isSelected = c.countryCode == selectedCode;
+                    return _CountryChip(country: c, isSelected: isSelected, onTap: () => widget.onSelected(c));
+                  }).toList(),
+                ),
+                const SizedBox(height: 18),
+                Text(
+                  'All countries',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700, color: textColor),
+                ),
+                const SizedBox(height: 10),
+              ],
+            ],
           ),
-          child: TextField(
-            onChanged: _filter,
-            decoration: InputDecoration(
-              hintText: 'Search country',
-              hintStyle: TextStyle(color: textSecondary),
-              prefixIcon: Icon(Icons.search, color: textSecondary),
-              border: InputBorder.none,
-              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-            ),
-          ),
         ),
-        const SizedBox(height: 16),
-        if (_query.trim().isEmpty) ...[
-          Text(
-            'Suggested',
-            style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700, color: textColor),
-          ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: suggested.map((c) {
+        SliverList(
+          delegate: SliverChildBuilderDelegate(
+            childCount: _filteredCountries.length,
+            (context, index) {
+              final c = _filteredCountries[index];
               final isSelected = c.countryCode == selectedCode;
-              return _CountryChip(
-                country: c,
-                isSelected: isSelected,
-                onTap: () => widget.onSelected(c),
+              final isFirst = index == 0;
+              final isLast = index == _filteredCountries.length - 1;
+
+              return Container(
+                decoration: BoxDecoration(
+                  color: surface,
+                  borderRadius: BorderRadius.only(
+                    topLeft: Radius.circular(isFirst ? AppRadius.lg : 0),
+                    topRight: Radius.circular(isFirst ? AppRadius.lg : 0),
+                    bottomLeft: Radius.circular(isLast ? AppRadius.lg : 0),
+                    bottomRight: Radius.circular(isLast ? AppRadius.lg : 0),
+                  ),
+                  border: Border(
+                    top: isFirst ? BorderSide(color: dividerColor, width: 1) : BorderSide.none,
+                    left: BorderSide(color: dividerColor, width: 1),
+                    right: BorderSide(color: dividerColor, width: 1),
+                    bottom: BorderSide(color: isLast ? dividerColor : dividerColor, width: 1),
+                  ),
+                ),
+                child: _CountryListTile(country: c, isSelected: isSelected, onTap: () => widget.onSelected(c)),
               );
-            }).toList(),
-          ),
-          const SizedBox(height: 18),
-          Text(
-            'All countries',
-            style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700, color: textColor),
-          ),
-          const SizedBox(height: 10),
-        ],
-        Expanded(
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(AppRadius.lg),
-            child: ListView.separated(
-              itemCount: _filteredCountries.length,
-              separatorBuilder: (_, __) => Divider(height: 1, color: (isDark ? AppColors.darkSurfaceVariant : AppColors.lightBorder).withValues(alpha: 0.6)),
-              itemBuilder: (context, index) {
-                final c = _filteredCountries[index];
-                final isSelected = c.countryCode == selectedCode;
-                return _CountryListTile(
-                  country: c,
-                  isSelected: isSelected,
-                  onTap: () => widget.onSelected(c),
-                );
-              },
-            ),
+            },
           ),
         ),
-        const SizedBox(height: 12),
+        const SliverToBoxAdapter(child: SizedBox(height: 12)),
       ],
     );
   }
