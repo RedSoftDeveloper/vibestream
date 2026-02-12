@@ -79,6 +79,40 @@ async function countTodaySessionsForUser(ctx: LogContext, supabaseAdmin: any, us
   }
 }
 
+async function countTodayRecommendationsForUser(ctx: LogContext, supabaseAdmin: any, userId: string): Promise<number> {
+  try {
+    const { data: profiles, error: profilesErr } = await supabaseAdmin.from("profiles").select("id").eq("user_id", userId);
+    if (profilesErr) {
+      log(ctx, "Profiles lookup failed for daily recommendations usage", { error: String(profilesErr) });
+      return 0;
+    }
+
+    const profileIds = (profiles ?? []).map((p: any) => String(p.id)).filter(Boolean);
+    if (profileIds.length === 0) return 0;
+
+    const now = new Date();
+    const usageDate = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-${String(now.getUTCDate()).padStart(2, "0")}`;
+
+    const { data, error } = await supabaseAdmin
+      .from("profile_recommendation_usage_daily")
+      .select("recommendations_used")
+      .in("profile_id", profileIds)
+      .eq("usage_date", usageDate);
+
+    if (error) {
+      log(ctx, "Daily recommendations usage query failed", { error: String(error) });
+      return 0;
+    }
+
+    let sum = 0;
+    for (const r of data ?? []) sum += Number((r as any).recommendations_used ?? 0);
+    return sum;
+  } catch (e) {
+    log(ctx, "Daily recommendations usage query threw", { error: String(e) });
+    return 0;
+  }
+}
+
 serve(async (req: Request) => {
   const reqId = crypto.randomUUID();
   let userId: string | null = null;
@@ -144,19 +178,20 @@ serve(async (req: Request) => {
     // --- Daily recommendation limit enforcement (authoritative, server-side) ---
     // We do this AFTER verifying the profile is owned by the user, but BEFORE any OpenAI/TMDB work.
     const tier = await getSubscriptionTier(ctx, supabaseAdmin, userId);
-    const dailyLimit = tier === "premium" ? 50 : 5;
-    const usedToday = await countTodaySessionsForUser(ctx, supabaseAdmin, userId);
-    if (usedToday >= dailyLimit) {
-      log(ctx, "Daily recommendation limit reached", { tier, dailyLimit, usedToday });
+    const dailySessionLimit = tier === "premium" ? 50 : 5;
+    const dailyRecommendationLimit = dailySessionLimit * FINAL_COUNT;
+    const usedTodayRecommendations = await countTodayRecommendationsForUser(ctx, supabaseAdmin, userId);
+    if (usedTodayRecommendations + FINAL_COUNT > dailyRecommendationLimit) {
+      log(ctx, "Daily recommendation limit reached", { tier, dailyRecommendationLimit, usedTodayRecommendations });
       return new Response(
         JSON.stringify({
           error: "daily_limit_reached",
           message: tier === "premium"
-            ? `You've reached your ${dailyLimit}/day recommendation limit.`
-            : `You've reached your free ${dailyLimit}/day recommendation limit. Upgrade to Premium for more.`,
+            ? `You've reached your ${dailyRecommendationLimit}/day recommendation limit.`
+            : `You've reached your free ${dailyRecommendationLimit}/day recommendation limit. Upgrade to Premium for more.`,
           tier,
-          daily_limit: dailyLimit,
-          used_today: usedToday,
+          daily_limit: dailyRecommendationLimit,
+          used_today: usedTodayRecommendations,
         }),
         { status: 429, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
       );
@@ -400,6 +435,41 @@ serve(async (req: Request) => {
 
     const { error: itemsErr } = await supabaseAdmin.from("recommendation_items").insert(recItems);
     if (itemsErr) log(ctx, "Failed to insert recommendation_items", itemsErr);
+
+    // --- Track usage (count recommendations before returning to the client) ---
+    // This uses an RPC that:
+    // 1) validates profile ownership via the caller JWT
+    // 2) dedupes by session_id
+    // 3) atomically increments the daily aggregate row
+    const { error: usageErr } = await supabaseUser.rpc("increment_daily_recommendation_usage", {
+      profile_id: profileId,
+      session_id: session.id,
+      recommendations_count: finalChosen.length,
+      daily_limit: dailyRecommendationLimit,
+    });
+
+    if (usageErr) {
+      const msg = String((usageErr as any)?.message ?? usageErr);
+      log(ctx, "Usage tracking RPC failed", { error: msg });
+
+      // If we exceeded the limit due to a race, clean up and return 429.
+      if (msg.toLowerCase().includes("daily_limit_exceeded") || msg.toLowerCase().includes("limit") || msg.toLowerCase().includes("exceed")) {
+        await supabaseAdmin.from("recommendation_items").delete().eq("session_id", session.id);
+        await supabaseAdmin.from("recommendation_sessions").delete().eq("id", session.id);
+
+        return new Response(
+          JSON.stringify({
+            error: "daily_limit_reached",
+            message: tier === "premium"
+              ? `You've reached your ${dailyRecommendationLimit}/day recommendation limit.`
+              : `You've reached your free ${dailyRecommendationLimit}/day recommendation limit. Upgrade to Premium for more.`,
+            tier,
+            daily_limit: dailyRecommendationLimit,
+          }),
+          { status: 429, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+        );
+      }
+    }
 
     await Promise.all(
       finalChosen.map((c) =>

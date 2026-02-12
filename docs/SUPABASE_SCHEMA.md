@@ -16,6 +16,8 @@ This document describes the Supabase database schema used by VibeStream.
 | `title_streaming_availability` | Links titles to providers per region |
 | `recommendation_sessions` | Mood quiz sessions with AI responses |
 | `recommendation_items` | Individual recommendations per session |
+| `profile_recommendation_usage_daily` | Daily aggregate recommendations used per profile |
+| `recommendation_usage_events` | Per-session usage events (dedupe daily increments) |
 | `profile_title_interactions` | User interactions (likes, dislikes, feedback, etc.) |
 | `profile_favorites` | User's favorite titles (dedicated favorites list) |
 | `app_feedback` | User feedback about the app itself |
@@ -235,6 +237,64 @@ CREATE TABLE public.recommendation_items (
 | `created_at` | timestamptz | Creation timestamp |
 
 ---
+
+### `profile_recommendation_usage_daily`
+Daily aggregate counter of how many recommendations a profile used on a given **UTC** date.
+
+```sql
+CREATE TABLE public.profile_recommendation_usage_daily (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  profile_id uuid NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  usage_date date NOT NULL,
+  recommendations_used integer NOT NULL DEFAULT 0,
+  sessions_count integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(profile_id, usage_date)
+);
+```
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `profile_id` | uuid | FK to profiles |
+| `usage_date` | date | UTC date for aggregation |
+| `recommendations_used` | int | Total recommendations used that day |
+| `sessions_count` | int | Count of sessions created that day |
+| `created_at` | timestamptz | Row creation timestamp |
+| `updated_at` | timestamptz | Last update timestamp |
+
+---
+
+### `recommendation_usage_events`
+Per-session usage events used to **dedupe** daily increments (so retries don’t double-count).
+
+```sql
+CREATE TABLE public.recommendation_usage_events (
+  session_id uuid PRIMARY KEY REFERENCES public.recommendation_sessions(id) ON DELETE CASCADE,
+  profile_id uuid NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  recommendations_used integer NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+```
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `session_id` | uuid | PK + FK to recommendation_sessions |
+| `profile_id` | uuid | FK to profiles |
+| `recommendations_used` | int | Recommendations counted for that session |
+| `created_at` | timestamptz | When event was written |
+
+---
+
+## RPC Functions
+
+### `increment_daily_recommendation_usage(profile_id, session_id, recommendations_count)`
+Atomically increments the daily aggregate and writes a deduping event (by `session_id`).
+
+Notes:
+- Uses the **caller JWT** to enforce profile ownership (`profiles.user_id = auth.uid()`).
+- Aggregation is based on **UTC date**.
+- If the same `session_id` is sent again, the function returns the current daily totals without incrementing.
 
 ### `profile_title_interactions`
 All user interactions with titles (likes, dislikes, feedback, etc.).
