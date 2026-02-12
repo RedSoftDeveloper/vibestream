@@ -5,6 +5,33 @@ import 'package:http/http.dart' as http;
 import 'package:vibestream/supabase/supabase_config.dart';
 import 'package:vibestream/features/recommendations/domain/entities/recommendation_card.dart';
 
+class RecommendationLimitException implements Exception {
+  final String message;
+  final String tier;
+  final int dailyLimit;
+  final int usedToday;
+
+  RecommendationLimitException({required this.message, required this.tier, required this.dailyLimit, required this.usedToday});
+
+  factory RecommendationLimitException.fromResponseData(dynamic data) {
+    try {
+      final map = data is Map<String, dynamic> ? data : (data is String ? (jsonDecode(data) as Map<String, dynamic>) : <String, dynamic>{});
+      return RecommendationLimitException(
+        message: map['message'] as String? ?? 'Daily recommendation limit reached.',
+        tier: map['tier'] as String? ?? 'free',
+        dailyLimit: (map['daily_limit'] as num?)?.toInt() ?? 0,
+        usedToday: (map['used_today'] as num?)?.toInt() ?? 0,
+      );
+    } catch (e) {
+      debugPrint('RecommendationLimitException.fromResponseData parse error: $e');
+      return RecommendationLimitException(message: 'Daily recommendation limit reached.', tier: 'free', dailyLimit: 0, usedToday: 0);
+    }
+  }
+
+  @override
+  String toString() => message;
+}
+
 /// Model for recent vibe data displayed on home page
 class RecentVibe {
   final String sessionId;
@@ -423,6 +450,12 @@ class RecommendationService {
       debugPrint('RecommendationService: Response status: ${res.status}');
       debugPrint('RecommendationService: Response data: ${res.data}');
 
+      if (res.status == 429) {
+        final limitEx = RecommendationLimitException.fromResponseData(res.data);
+        debugPrint('RecommendationService: Daily limit reached: ${limitEx.message}');
+        throw limitEx;
+      }
+
       if (res.status != 200) {
         debugPrint('Edge Function error: ${res.status} - ${res.data}');
         throw Exception('Failed to get recommendations: ${res.status} - ${res.data}');
@@ -507,7 +540,14 @@ class RecommendationService {
       if (streamedResponse.statusCode != 200) {
         final responseBody = await streamedResponse.stream.bytesToString();
         debugPrint('RecommendationService: Stream error ${streamedResponse.statusCode}: $responseBody');
-        yield StreamingError(message: 'Failed to start recommendation stream: ${streamedResponse.statusCode}');
+
+        if (streamedResponse.statusCode == 429) {
+          final limitEx = RecommendationLimitException.fromResponseData(responseBody);
+          yield StreamingError(message: limitEx.message);
+        } else {
+          yield StreamingError(message: 'Failed to start recommendation stream: ${streamedResponse.statusCode}');
+        }
+
         client.close();
         return;
       }

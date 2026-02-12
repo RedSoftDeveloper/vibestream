@@ -35,6 +35,7 @@ CREATE TABLE public.app_users (
   avatar_url text,
   region text NOT NULL DEFAULT 'SE'::text,
   locale text NOT NULL DEFAULT 'en'::text,
+  subscription_tier text NOT NULL DEFAULT 'free'::text,
   last_active_profile_id uuid,
   CONSTRAINT app_users_pkey PRIMARY KEY (id),
   CONSTRAINT app_users_id_fkey FOREIGN KEY (id) REFERENCES auth.users(id),
@@ -50,6 +51,7 @@ CREATE TABLE public.app_users (
 | `avatar_url` | text | Profile avatar URL |
 | `region` | text | User region code (default: 'SE') |
 | `locale` | text | Language locale (default: 'en') |
+| `subscription_tier` | text | Subscription tier ('free' or 'premium') |
 | `last_active_profile_id` | uuid | FK to last used profile |
 
 ---

@@ -24,6 +24,61 @@ import { getUserRegion, storeStreamingProviders } from "./database.ts";
 import { callOpenAI } from "./openai.ts";
 import { processCandidatesParallel } from "./candidates.ts";
 
+type SubscriptionTier = "free" | "premium";
+
+function startOfTodayUtcIso() {
+  const now = new Date();
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+  return start.toISOString();
+}
+
+async function getSubscriptionTier(ctx: LogContext, supabaseAdmin: any, userId: string): Promise<SubscriptionTier> {
+  try {
+    const { data, error } = await supabaseAdmin.from("app_users").select("subscription_tier").eq("id", userId).maybeSingle();
+    if (error) {
+      log(ctx, "Subscription tier lookup failed; defaulting to free", { error: String(error) });
+      return "free";
+    }
+
+    const raw = (data as any)?.subscription_tier;
+    const tier = typeof raw === "string" ? raw.toLowerCase() : "free";
+    return tier === "premium" ? "premium" : "free";
+  } catch (e) {
+    log(ctx, "Subscription tier lookup threw; defaulting to free", { error: String(e) });
+    return "free";
+  }
+}
+
+async function countTodaySessionsForUser(ctx: LogContext, supabaseAdmin: any, userId: string): Promise<number> {
+  const start = startOfTodayUtcIso();
+  try {
+    const { data: profiles, error: profilesErr } = await supabaseAdmin.from("profiles").select("id").eq("user_id", userId);
+    if (profilesErr) {
+      log(ctx, "Profiles lookup failed for daily usage", { error: String(profilesErr) });
+      return 0;
+    }
+
+    const profileIds = (profiles ?? []).map((p: any) => String(p.id)).filter(Boolean);
+    if (profileIds.length === 0) return 0;
+
+    const { count, error: countErr } = await supabaseAdmin
+      .from("recommendation_sessions")
+      .select("id", { count: "exact", head: true })
+      .in("profile_id", profileIds)
+      .gte("created_at", start);
+
+    if (countErr) {
+      log(ctx, "Daily session count failed", { error: String(countErr) });
+      return 0;
+    }
+
+    return typeof count === "number" ? count : 0;
+  } catch (e) {
+    log(ctx, "Daily session count threw", { error: String(e) });
+    return 0;
+  }
+}
+
 serve(async (req: Request) => {
   const reqId = crypto.randomUUID();
   let userId: string | null = null;
@@ -84,6 +139,27 @@ serve(async (req: Request) => {
     if (profileErr || !profile) {
       log(ctx, "Profile not found or unauthorized", profileErr);
       return new Response(JSON.stringify({ error: "Profile not found or not owned by user" }), { status: 404, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } });
+    }
+
+    // --- Daily recommendation limit enforcement (authoritative, server-side) ---
+    // We do this AFTER verifying the profile is owned by the user, but BEFORE any OpenAI/TMDB work.
+    const tier = await getSubscriptionTier(ctx, supabaseAdmin, userId);
+    const dailyLimit = tier === "premium" ? 50 : 5;
+    const usedToday = await countTodaySessionsForUser(ctx, supabaseAdmin, userId);
+    if (usedToday >= dailyLimit) {
+      log(ctx, "Daily recommendation limit reached", { tier, dailyLimit, usedToday });
+      return new Response(
+        JSON.stringify({
+          error: "daily_limit_reached",
+          message: tier === "premium"
+            ? `You've reached your ${dailyLimit}/day recommendation limit.`
+            : `You've reached your free ${dailyLimit}/day recommendation limit. Upgrade to Premium for more.`,
+          tier,
+          daily_limit: dailyLimit,
+          used_today: usedToday,
+        }),
+        { status: 429, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } },
+      );
     }
 
     const { data: prefs } = prefsResult;
